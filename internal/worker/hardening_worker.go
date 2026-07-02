@@ -197,6 +197,12 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 
 	var unsigned service.ArtifactInfo
 	var signed service.ArtifactInfo
+	var uploadedKeys []string
+	defer func() {
+		if err != nil && len(uploadedKeys) > 0 {
+			err = errors.Join(err, w.rollbackArtifacts(uploadedKeys))
+		}
+	}()
 	if err := w.runStep(task.ID, model.HardeningStepCollectArtifacts, func(step *model.HardeningStep) error {
 		sum, size, err := service.SHA256File(outputPath)
 		if err != nil {
@@ -229,7 +235,9 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 	}
 
 	if err := w.runStep(task.ID, model.HardeningStepUploadArtifacts, func(step *model.HardeningStep) error {
-		return w.uploadArtifacts(taskCtx, unsigned, signed)
+		keys, uploadErr := w.uploadArtifacts(taskCtx, unsigned, signed)
+		uploadedKeys = keys
+		return uploadErr
 	}); err != nil {
 		return err
 	}
@@ -281,21 +289,24 @@ func (w *HardeningWorker) uploadArtifact(ctx context.Context, artifact service.A
 	return w.storage.PutObject(ctx, artifact.ObjectKey, file, artifact.Size, "application/octet-stream")
 }
 
-func (w *HardeningWorker) uploadArtifacts(ctx context.Context, artifacts ...service.ArtifactInfo) error {
+func (w *HardeningWorker) uploadArtifacts(ctx context.Context, artifacts ...service.ArtifactInfo) ([]string, error) {
 	uploadedKeys := make([]string, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		if artifact.Path == "" {
 			continue
 		}
 		if err := w.uploadArtifact(ctx, artifact); err != nil {
-			return errors.Join(err, w.rollbackArtifacts(ctx, uploadedKeys))
+			return uploadedKeys, err
 		}
 		uploadedKeys = append(uploadedKeys, artifact.ObjectKey)
 	}
-	return nil
+	return uploadedKeys, nil
 }
 
-func (w *HardeningWorker) rollbackArtifacts(ctx context.Context, objectKeys []string) error {
+func (w *HardeningWorker) rollbackArtifacts(objectKeys []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	var rollbackErr error
 	for i := len(objectKeys) - 1; i >= 0; i-- {
 		rollbackErr = errors.Join(rollbackErr, w.storage.DeleteObject(ctx, objectKeys[i]))

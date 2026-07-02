@@ -23,13 +23,15 @@ import (
 )
 
 type fakeWorkerStorage struct {
-	objects      map[string][]byte
-	putErr       error
-	putFailAfter int
-	putCalls     int
-	deleteErr    error
-	deleteCalls  []string
-	getObjectErr error
+	objects                     map[string][]byte
+	putErr                      error
+	putFailAfter                int
+	putCalls                    int
+	deleteErr                   error
+	deleteCalls                 []string
+	onPutFail                   func()
+	failDeleteOnCanceledContext bool
+	getObjectErr                error
 }
 
 func (s *fakeWorkerStorage) GetObjectToFile(ctx context.Context, objectKey string, destinationPath string) error {
@@ -43,6 +45,9 @@ func (s *fakeWorkerStorage) GetObjectToFile(ctx context.Context, objectKey strin
 func (s *fakeWorkerStorage) PutObject(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) error {
 	s.putCalls++
 	if s.putErr != nil && (s.putFailAfter == 0 || s.putCalls >= s.putFailAfter) {
+		if s.onPutFail != nil {
+			s.onPutFail()
+		}
 		return s.putErr
 	}
 	if s.objects == nil {
@@ -58,6 +63,11 @@ func (s *fakeWorkerStorage) PutObject(ctx context.Context, objectKey string, rea
 
 func (s *fakeWorkerStorage) DeleteObject(ctx context.Context, objectKey string) error {
 	s.deleteCalls = append(s.deleteCalls, objectKey)
+	if s.failDeleteOnCanceledContext {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}
@@ -514,6 +524,84 @@ func TestHardeningWorker_ProcessNextUploadFailureMarksTaskAndAppFailed(t *testin
 	}
 
 	_ = runner
+}
+
+func TestHardeningWorker_ProcessNextUploadFailureRollsBackWithCanceledTaskContext(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	storage.putErr = context.Canceled
+	storage.putFailAfter = 2
+	storage.onPutFail = cancel
+	storage.failDeleteOnCanceledContext = true
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "upload-cancel-rollback")
+
+	processed, err := w.ProcessNext(ctx)
+	if !processed {
+		t.Fatal("processed = false, want true")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessNext() error = %v, want %v", err, context.Canceled)
+	}
+
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
+	}
+	unsignedObjectKey := artifactObjectKey(found, "unsigned", ".apk")
+	if _, ok := storage.objects[unsignedObjectKey]; ok {
+		t.Fatal("expected unsigned artifact rollback even after task context cancellation")
+	}
+	if len(storage.deleteCalls) != 1 || storage.deleteCalls[0] != unsignedObjectKey {
+		t.Fatalf("delete calls = %+v, want [%s]", storage.deleteCalls, unsignedObjectKey)
+	}
+
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
+	}
+	if found.Status != model.HardeningTaskStatusFailed || app.Status != model.AppStatusFailed {
+		t.Fatalf("task/app status = %s/%s, want failed/failed", found.Status, app.Status)
+	}
+}
+
+func TestHardeningWorker_ProcessNextCompletionFailureRollsBackUploadedArtifacts(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "completion-artifact-rollback")
+	updateErr := errors.New("apps status update failed")
+	registerWorkerAppUpdateFailure(t, database, "worker-complete-artifact-rollback", updateErr)
+
+	processed, err := w.ProcessNext(context.Background())
+	if !processed {
+		t.Fatal("processed = false, want true")
+	}
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("ProcessNext() error = %v, want %v", err, updateErr)
+	}
+
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
+	}
+	unsignedObjectKey := artifactObjectKey(found, "unsigned", ".apk")
+	signedObjectKey := artifactObjectKey(found, "signed_test", ".apk")
+	if _, ok := storage.objects[unsignedObjectKey]; ok {
+		t.Fatal("expected unsigned artifact rollback after completion transition failure")
+	}
+	if _, ok := storage.objects[signedObjectKey]; ok {
+		t.Fatal("expected signed artifact rollback after completion transition failure")
+	}
+	if len(storage.deleteCalls) != 2 || storage.deleteCalls[0] != signedObjectKey || storage.deleteCalls[1] != unsignedObjectKey {
+		t.Fatalf("delete calls = %+v, want [%s %s]", storage.deleteCalls, signedObjectKey, unsignedObjectKey)
+	}
+
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
+	}
+	if found.Status != model.HardeningTaskStatusRunning || app.Status != model.AppStatusProcessing {
+		t.Fatalf("task/app status = %s/%s, want running/processing after rollback", found.Status, app.Status)
+	}
 }
 
 func TestHardeningWorker_ProcessNextContextCancellationMarksTaskAndAppFailed(t *testing.T) {
