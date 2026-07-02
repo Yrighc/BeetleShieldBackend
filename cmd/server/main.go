@@ -55,12 +55,23 @@ func main() {
 	strategyService := service.NewStrategyService(strategyRepo)
 	strategyHandler := handler.NewStrategyHandler(strategyService)
 
+	hardeningRepo := repository.NewHardeningRepository(database)
+	hardeningService := service.NewHardeningService(
+		hardeningRepo,
+		appRepo,
+		strategyService,
+		storageClient,
+		cfg.DPTDefaultVMPRules,
+	)
+	hardeningHandler := handler.NewHardeningHandler(hardeningService)
+
 	r := router.New(router.Deps{
-		JWTSecret:       cfg.JWTSecret,
-		AuthHandler:     authHandler,
-		AppHandler:      appHandler,
-		UserHandler:     userHandler,
-		StrategyHandler: strategyHandler,
+		JWTSecret:        cfg.JWTSecret,
+		AuthHandler:      authHandler,
+		AppHandler:       appHandler,
+		UserHandler:      userHandler,
+		StrategyHandler:  strategyHandler,
+		HardeningHandler: hardeningHandler,
 	})
 
 	if err := r.Run(":" + cfg.ServerPort); err != nil {
