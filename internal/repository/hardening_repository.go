@@ -40,6 +40,16 @@ var defaultHardeningSteps = []model.HardeningStep{
 	{StepKey: model.HardeningStepUploadArtifacts, Name: "上传产物", SortOrder: 6, Status: model.HardeningStepStatusWaiting},
 }
 
+func requireUpdatedRow(result *gorm.DB) error {
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (r *HardeningRepository) CreateTaskWithSteps(task *model.HardeningTask) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(task).Error; err != nil {
@@ -79,17 +89,17 @@ func (r *HardeningRepository) NextQueuedTask() (*model.HardeningTask, error) {
 }
 
 func (r *HardeningRepository) MarkTaskRunning(taskID uint, startedAt time.Time) error {
-	return r.db.Model(&model.HardeningTask{}).
-		Where("id = ?", taskID).
+	return requireUpdatedRow(r.db.Model(&model.HardeningTask{}).
+		Where("id = ? AND status = ?", taskID, model.HardeningTaskStatusQueued).
 		Updates(map[string]interface{}{
 			"status":     model.HardeningTaskStatusRunning,
 			"started_at": startedAt,
-		}).Error
+		}))
 }
 
 func (r *HardeningRepository) MarkTaskCompleted(taskID uint, unsignedKey string, unsignedSize int64, unsignedSHA string, signedKey string, signedSize int64, signedSHA string, finishedAt time.Time) error {
-	return r.db.Model(&model.HardeningTask{}).
-		Where("id = ?", taskID).
+	return requireUpdatedRow(r.db.Model(&model.HardeningTask{}).
+		Where("id = ? AND status = ?", taskID, model.HardeningTaskStatusRunning).
 		Updates(map[string]interface{}{
 			"status":                 model.HardeningTaskStatusCompleted,
 			"unsigned_object_key":    unsignedKey,
@@ -100,17 +110,17 @@ func (r *HardeningRepository) MarkTaskCompleted(taskID uint, unsignedKey string,
 			"signed_test_sha256":     signedSHA,
 			"finished_at":            finishedAt,
 			"error_summary":          "",
-		}).Error
+		}))
 }
 
 func (r *HardeningRepository) MarkTaskFailed(taskID uint, summary string, finishedAt time.Time) error {
-	return r.db.Model(&model.HardeningTask{}).
-		Where("id = ?", taskID).
+	return requireUpdatedRow(r.db.Model(&model.HardeningTask{}).
+		Where("id = ? AND status = ?", taskID, model.HardeningTaskStatusRunning).
 		Updates(map[string]interface{}{
 			"status":        model.HardeningTaskStatusFailed,
 			"error_summary": summary,
 			"finished_at":   finishedAt,
-		}).Error
+		}))
 }
 
 func (r *HardeningRepository) RecoverRunningTasks(summary string) ([]uint, error) {
@@ -228,32 +238,33 @@ func (r *HardeningRepository) FindStep(taskID uint, key model.HardeningStepKey) 
 }
 
 func (r *HardeningRepository) StartStep(stepID uint, startedAt time.Time) error {
-	return r.db.Model(&model.HardeningStep{}).
-		Where("id = ?", stepID).
+	return requireUpdatedRow(r.db.Model(&model.HardeningStep{}).
+		Where("id = ? AND status = ?", stepID, model.HardeningStepStatusWaiting).
 		Updates(map[string]interface{}{
-			"status":     model.HardeningStepStatusRunning,
-			"started_at": startedAt,
-		}).Error
+			"status":      model.HardeningStepStatusRunning,
+			"started_at":  startedAt,
+			"finished_at": nil,
+		}))
 }
 
 func (r *HardeningRepository) FinishStepSuccess(stepID uint, finishedAt time.Time) error {
-	return r.db.Model(&model.HardeningStep{}).
-		Where("id = ?", stepID).
+	return requireUpdatedRow(r.db.Model(&model.HardeningStep{}).
+		Where("id = ? AND status = ?", stepID, model.HardeningStepStatusRunning).
 		Updates(map[string]interface{}{
 			"status":        model.HardeningStepStatusSuccess,
 			"finished_at":   finishedAt,
 			"error_message": "",
-		}).Error
+		}))
 }
 
 func (r *HardeningRepository) FinishStepFailed(stepID uint, message string, finishedAt time.Time) error {
-	return r.db.Model(&model.HardeningStep{}).
-		Where("id = ?", stepID).
+	return requireUpdatedRow(r.db.Model(&model.HardeningStep{}).
+		Where("id = ? AND status = ?", stepID, model.HardeningStepStatusRunning).
 		Updates(map[string]interface{}{
 			"status":        model.HardeningStepStatusFailed,
 			"finished_at":   finishedAt,
 			"error_message": message,
-		}).Error
+		}))
 }
 
 func (r *HardeningRepository) AppendLog(log *model.HardeningLog) error {
