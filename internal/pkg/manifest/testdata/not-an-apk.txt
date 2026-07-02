@@ -1,0 +1,1 @@
+this is not a valid apk file, used to test parser error handling
