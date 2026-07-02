@@ -76,3 +76,7 @@ func (r *AppRepository) List(filter AppListFilter) ([]model.App, int64, error) {
 
 	return apps, total, nil
 }
+
+func (r *AppRepository) UpdateStatus(id uint, status model.AppStatus) error {
+	return requireUpdatedRow(r.db.Model(&model.App{}).Where("id = ?", id).Update("status", status))
+}

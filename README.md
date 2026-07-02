@@ -1,7 +1,8 @@
 # BeetleShield Backend
 
 Go + Gin backend for the BeetleShield Android hardening management platform.
-This is sub-project one: project foundation + login + app management.
+This is sub-project one: project foundation + login + app management +
+hardening pipeline orchestration.
 See `docs/superpowers/specs/2026-07-02-backend-foundation-app-management-design.md`
 for the full design.
 
@@ -62,22 +63,38 @@ make test
 ## API overview
 
 All endpoints are under `/api/v1`, return `{code, message, data}`, and (except
-`/auth/login`) require `Authorization: Bearer <token>`.
+`/api/v1/auth/login`) require `Authorization: Bearer <token>`.
 
-- `POST /auth/login` — `{email, password}` → `{token, user}`
-- `GET /auth/me` — current user
-- `POST /apps/upload` — multipart `file` + `tag` (`finance`/`game`/`tool`/`ecommerce`)
+- `POST /api/v1/auth/login` — `{email, password}` → `{token, user}`
+- `GET /api/v1/auth/me` — current user
+- `POST /api/v1/apps/upload` — multipart `file` + `tag` (`finance`/`game`/`tool`/`ecommerce`)
   + optional `packageName`/`version` (required for `.aab`, auto-parsed for `.apk`)
-- `GET /apps?search=&status=&tag=&page=&pageSize=` — list
-- `GET /apps/:id` — detail
-- `DELETE /apps/:id` — delete
-- `GET /apps/:id/download-url` — presigned MinIO download URL (15 min expiry)
+- `GET /api/v1/apps?search=&status=&tag=&page=&pageSize=` — list
+- `GET /api/v1/apps/:id` — detail
+- `DELETE /api/v1/apps/:id` — delete
+- `GET /api/v1/apps/:id/download-url` — presigned MinIO download URL (15 min expiry)
+- `POST /api/v1/hardening-tasks` — create a queued hardening task for an existing app (`admin`/`developer`)
+- `GET /api/v1/hardening-tasks?status=&appId=&search=&page=&pageSize=` — list hardening tasks
+- `GET /api/v1/hardening-tasks/:id` — task detail with steps and recent logs
+- `GET /api/v1/hardening-tasks/:id/logs?stepKey=&afterId=&limit=` — task logs
+- `GET /api/v1/hardening-tasks/:id/download-url?artifact=unsigned|signed_test` — presigned artifact download URL
+- `GET /api/v1/apps/:id/hardening-history` — recent hardening history for an app
 
 See `scripts/smoke_test.sh` for a runnable example of the full flow.
 
+## Manual hardening smoke test
+
+The default test suite does not run `dpt.jar`. To test the real engine locally:
+
+1. Ensure `.env` points `DPT_JAR_PATH` at `/Users/yrighc/work/hzyz/project/test/dpt-shell/executable/dpt.jar`.
+2. Upload an APK through `POST /api/v1/apps/upload`.
+3. Create a hardening task with `POST /api/v1/hardening-tasks`.
+4. Poll `GET /api/v1/hardening-tasks/:id` until the task is `completed` or `failed`.
+5. Download the unsigned artifact with `GET /api/v1/hardening-tasks/:id/download-url?artifact=unsigned`.
+6. Optionally download the test signed artifact with `artifact=signed_test` if present.
+
 ## What's not in this sub-project
 
-Full user-management CRUD, hardening strategy templates, the hardening
-pipeline (engine integration), reports, audit log viewing, and the dashboard
-aggregation endpoints are separate, later sub-projects — see the design doc's
-"后续子项目" section.
+Full user-management CRUD, hardening strategy templates, reports, audit log
+viewing, and the dashboard aggregation endpoints are separate, later
+sub-projects — see the design doc's "后续子项目" section.

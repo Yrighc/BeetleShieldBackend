@@ -9,11 +9,12 @@ import (
 )
 
 type Deps struct {
-	JWTSecret       string
-	AuthHandler     *handler.AuthHandler
-	AppHandler      *handler.AppHandler
-	UserHandler     *handler.UserHandler
-	StrategyHandler *handler.StrategyHandler
+	JWTSecret        string
+	AuthHandler      *handler.AuthHandler
+	AppHandler       *handler.AppHandler
+	UserHandler      *handler.UserHandler
+	StrategyHandler  *handler.StrategyHandler
+	HardeningHandler *handler.HardeningHandler
 }
 
 func New(deps Deps) *gin.Engine {
@@ -40,6 +41,7 @@ func New(deps Deps) *gin.Engine {
 			apps.POST("/upload", writeRoles, deps.AppHandler.Upload)
 			apps.GET("", deps.AppHandler.List)
 			apps.GET("/:id", deps.AppHandler.Get)
+			apps.GET("/:id/hardening-history", deps.HardeningHandler.AppHistory)
 			apps.DELETE("/:id", writeRoles, deps.AppHandler.Delete)
 			apps.GET("/:id/download-url", writeRoles, deps.AppHandler.DownloadURL)
 		}
@@ -59,6 +61,16 @@ func New(deps Deps) *gin.Engine {
 			strategies.GET("/templates", deps.StrategyHandler.Templates)
 			strategies.GET("/current", deps.StrategyHandler.GetCurrent)
 			strategies.PUT("/current", middleware.RequireRole(model.RoleAdmin), deps.StrategyHandler.SaveCurrent)
+		}
+
+		hardeningTasks := v1.Group("/hardening-tasks")
+		hardeningTasks.Use(middleware.JWTAuth(deps.JWTSecret))
+		{
+			hardeningTasks.POST("", writeRoles, deps.HardeningHandler.Create)
+			hardeningTasks.GET("", deps.HardeningHandler.List)
+			hardeningTasks.GET("/:id", deps.HardeningHandler.Get)
+			hardeningTasks.GET("/:id/logs", deps.HardeningHandler.Logs)
+			hardeningTasks.GET("/:id/download-url", deps.HardeningHandler.DownloadURL)
 		}
 	}
 

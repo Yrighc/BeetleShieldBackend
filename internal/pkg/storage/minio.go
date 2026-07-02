@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -54,4 +55,21 @@ func (s *MinioStorage) PresignedDownloadURL(ctx context.Context, objectKey strin
 
 func (s *MinioStorage) DeleteObject(ctx context.Context, objectKey string) error {
 	return s.client.RemoveObject(ctx, s.bucket, objectKey, minio.RemoveObjectOptions{})
+}
+
+func (s *MinioStorage) GetObjectToFile(ctx context.Context, objectKey string, destinationPath string) error {
+	object, err := s.client.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return err
+	}
+	defer object.Close()
+
+	dst, err := os.Create(destinationPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, object)
+	return err
 }

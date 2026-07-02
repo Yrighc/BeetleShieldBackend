@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"errors"
 	"testing"
+
+	"gorm.io/gorm"
 
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/db"
@@ -97,5 +100,40 @@ func TestAppRepository_ListFilters(t *testing.T) {
 	}
 	if total != 1 || result[0].PackageName != "com.repotest.game" {
 		t.Errorf("unexpected search result: %+v total=%d", result, total)
+	}
+}
+
+func TestAppRepository_UpdateStatus(t *testing.T) {
+	repo := setupAppRepo(t)
+
+	app := model.App{
+		Name:        "状态测试应用",
+		PackageName: "com.repotest.status",
+		Version:     "1.0.0",
+		Tag:         model.AppTagTool,
+		Status:      model.AppStatusUnprotected,
+		ObjectKey:   "status/app.apk",
+		MD5:         "d41d8cd98f00b204e9800998ecf8427e",
+		SHA256:      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		UploadedBy:  1,
+	}
+	if err := repo.Create(&app); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := repo.UpdateStatus(app.ID, model.AppStatusProcessing); err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+
+	found, err := repo.FindByID(app.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if found.Status != model.AppStatusProcessing {
+		t.Fatalf("Status = %q, want %q", found.Status, model.AppStatusProcessing)
+	}
+
+	if err := repo.UpdateStatus(app.ID+9999, model.AppStatusFailed); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("UpdateStatus() missing app error = %v, want %v", err, gorm.ErrRecordNotFound)
 	}
 }

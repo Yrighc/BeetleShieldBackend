@@ -66,3 +66,29 @@ func TestLoad_MissingJWTSecret(t *testing.T) {
 		t.Fatal("Load() expected error for missing JWT_SECRET, got nil")
 	}
 }
+
+func TestLoad_DPTDefaults(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	content := []byte("JWT_SECRET=test-secret\nDB_HOST=localhost\n")
+	if err := os.WriteFile(envPath, content, 0600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	cfg, err := Load(envPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DPTJarPath != "/Users/yrighc/work/hzyz/project/test/dpt-shell/executable/dpt.jar" {
+		t.Fatalf("DPTJarPath = %q", cfg.DPTJarPath)
+	}
+	if cfg.DPTWorkDir != "/tmp/beetleshield-hardening" {
+		t.Fatalf("DPTWorkDir = %q", cfg.DPTWorkDir)
+	}
+	if cfg.DPTDefaultVMPRules != "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**" {
+		t.Fatalf("DPTDefaultVMPRules = %q", cfg.DPTDefaultVMPRules)
+	}
+	if cfg.DPTTaskTimeoutMinutes != 60 {
+		t.Fatalf("DPTTaskTimeoutMinutes = %d", cfg.DPTTaskTimeoutMinutes)
+	}
+}
