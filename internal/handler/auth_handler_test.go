@@ -44,7 +44,7 @@ func setupAuthRouter(t *testing.T) (*httptest.Server, func()) {
 		t.Fatalf("create test user: %v", err)
 	}
 
-	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours)
+	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, nil)
 	authHandler := handler.NewAuthHandler(authService)
 	r := router.New(router.Deps{JWTSecret: cfg.JWTSecret, AuthHandler: authHandler})
 

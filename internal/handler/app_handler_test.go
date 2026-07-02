@@ -58,12 +58,12 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, string, func()) {
 		t.Fatalf("create auditor user: %v", err)
 	}
 
-	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours)
-	token, _, err := authService.Login(testUser.Email, "Password123!")
+	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, nil)
+	token, _, err := authService.Login(testUser.Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
-	auditorToken, _, err := authService.Login(auditorUser.Email, "Password123!")
+	auditorToken, _, err := authService.Login(auditorUser.Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("auditor Login() error = %v", err)
 	}
@@ -78,7 +78,7 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, string, func()) {
 	}
 	appRepo := repository.NewAppRepository(database)
 	hardeningRepo := repository.NewHardeningRepository(database)
-	appService := service.NewAppService(appRepo, hardeningRepo, st, cfg.MaxUploadSizeMB)
+	appService := service.NewAppService(appRepo, hardeningRepo, st, cfg.MaxUploadSizeMB, nil)
 	appHandler := handler.NewAppHandler(appService)
 
 	r := router.New(router.Deps{

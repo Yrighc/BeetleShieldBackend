@@ -3,9 +3,11 @@ package service_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"mime/multipart"
 	"os"
 	"testing"
+	"time"
 
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/db"
@@ -65,7 +67,42 @@ func setupAppService(t *testing.T) *service.AppService {
 		t.Fatalf("EnsureBucket() error = %v (is `make dev-up` running?)", err)
 	}
 
-	return service.NewAppService(appRepo, hardeningRepo, st, 10)
+	return service.NewAppService(appRepo, hardeningRepo, st, 10, nil)
+}
+
+func setupAppServiceWithAudit(t *testing.T) (*service.AppService, *service.AuditService, string, uint) {
+	t.Helper()
+	cfg := &config.Config{
+		DBHost: "localhost", DBPort: "5432",
+		DBUser: "root", DBPassword: "root",
+		DBName: "beetleshield", DBSSLMode: "disable",
+	}
+	database, err := db.Connect(cfg)
+	if err != nil {
+		t.Fatalf("Connect() error = %v (is Postgres running?)", err)
+	}
+	if err := db.Migrate(database); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	marker := fmt.Sprintf("app-audit-%d", time.Now().UnixNano())
+	actorID := uint(time.Now().UnixNano()%1_000_000_000 + 400_000)
+	t.Cleanup(func() {
+		database.Unscoped().Where("ip = ?", marker).Delete(&model.AuditLog{})
+		database.Unscoped().Where("package_name LIKE ?", "com.svcaudittest.%").Delete(&model.App{})
+	})
+	appRepo := repository.NewAppRepository(database)
+	hardeningRepo := repository.NewHardeningRepository(database)
+	auditService := service.NewAuditService(repository.NewAuditRepository(database))
+
+	st, err := storage.NewMinioStorage("localhost:9000", "admin", "yuan801200", "test-bucket", false)
+	if err != nil {
+		t.Fatalf("NewMinioStorage() error = %v", err)
+	}
+	if err := st.EnsureBucket(context.Background()); err != nil {
+		t.Fatalf("EnsureBucket() error = %v (is MinIO running?)", err)
+	}
+
+	return service.NewAppService(appRepo, hardeningRepo, st, 10, auditService), auditService, marker, actorID
 }
 
 func TestAppService_Upload_ManualPackageInfo(t *testing.T) {
@@ -84,7 +121,7 @@ func TestAppService_Upload_ManualPackageInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload() error = %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Delete(ctx, app.ID) })
+	t.Cleanup(func() { _ = svc.Delete(ctx, app.ID, 0, "") })
 
 	if app.PackageName != "com.svctest.aabapp" {
 		t.Errorf("PackageName = %q, want %q", app.PackageName, "com.svctest.aabapp")
@@ -131,7 +168,7 @@ func TestAppService_Upload_AutoParsesAPKPackageInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload() error = %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Delete(ctx, app.ID) })
+	t.Cleanup(func() { _ = svc.Delete(ctx, app.ID, 0, "") })
 
 	if app.PackageName != "com.example.helloworld" {
 		t.Errorf("PackageName = %q, want %q (auto-parsed)", app.PackageName, "com.example.helloworld")
@@ -167,5 +204,71 @@ func TestAppService_Upload_RejectsUnsupportedExtension(t *testing.T) {
 	})
 	if err != service.ErrUnsupportedFileType {
 		t.Errorf("err = %v, want %v", err, service.ErrUnsupportedFileType)
+	}
+}
+
+func TestAppService_UploadRecordsAuditEntry(t *testing.T) {
+	svc, auditService, marker, actorID := setupAppServiceWithAudit(t)
+	ctx := context.Background()
+	fh := buildFileHeader(t, "file", "audit-upload.aab", []byte("audit upload bytes"))
+
+	app, err := svc.Upload(ctx, service.UploadInput{
+		FileHeader:        fh,
+		Tag:               model.AppTagTool,
+		ManualPackageName: "com.svcaudittest.upload",
+		ManualVersion:     "1.0.0",
+		UploadedBy:        actorID,
+		IP:                marker,
+	})
+	if err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Delete(ctx, app.ID, actorID, marker) })
+
+	logs, total, err := auditService.List(repository.AuditListFilter{
+		ActorUserID: actorID,
+		Action:      string(model.AuditActionAppUpload),
+		Page:        1,
+		PageSize:    10,
+	})
+	if err != nil {
+		t.Fatalf("audit List() error = %v", err)
+	}
+	if total != 1 || len(logs) != 1 || logs[0].TargetID != app.ID || logs[0].TargetType != "app" || !logs[0].Success {
+		t.Fatalf("unexpected app upload audit rows len=%d total=%d rows=%+v", len(logs), total, logs)
+	}
+}
+
+func TestAppService_DeleteRecordsAuditEntry(t *testing.T) {
+	svc, auditService, marker, actorID := setupAppServiceWithAudit(t)
+	ctx := context.Background()
+	fh := buildFileHeader(t, "file", "audit-delete.aab", []byte("audit delete bytes"))
+
+	app, err := svc.Upload(ctx, service.UploadInput{
+		FileHeader:        fh,
+		Tag:               model.AppTagTool,
+		ManualPackageName: "com.svcaudittest.delete",
+		ManualVersion:     "1.0.0",
+		UploadedBy:        actorID,
+		IP:                marker,
+	})
+	if err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+	if err := svc.Delete(ctx, app.ID, actorID, marker); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	logs, total, err := auditService.List(repository.AuditListFilter{
+		ActorUserID: actorID,
+		Action:      string(model.AuditActionAppDelete),
+		Page:        1,
+		PageSize:    10,
+	})
+	if err != nil {
+		t.Fatalf("audit List() error = %v", err)
+	}
+	if total != 1 || len(logs) != 1 || logs[0].TargetID != app.ID || logs[0].TargetType != "app" || !logs[0].Success {
+		t.Fatalf("unexpected app delete audit rows len=%d total=%d rows=%+v", len(logs), total, logs)
 	}
 }

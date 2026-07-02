@@ -33,7 +33,7 @@ func setupTestStrategyRepo(t *testing.T) *repository.StrategyRepository {
 
 func TestStrategyService_Templates(t *testing.T) {
 	repo := setupTestStrategyRepo(t)
-	svc := service.NewStrategyService(repo)
+	svc := service.NewStrategyService(repo, nil)
 
 	tpls := svc.Templates()
 	if len(tpls) != 3 {
@@ -55,7 +55,7 @@ func TestStrategyService_Templates(t *testing.T) {
 
 func TestStrategyService_GetCurrent_DefaultsToFinanceWhenUnsaved(t *testing.T) {
 	repo := setupTestStrategyRepo(t)
-	svc := service.NewStrategyService(repo)
+	svc := service.NewStrategyService(repo, nil)
 
 	current, err := svc.GetCurrent()
 	if err != nil {
@@ -68,25 +68,25 @@ func TestStrategyService_GetCurrent_DefaultsToFinanceWhenUnsaved(t *testing.T) {
 
 func TestStrategyService_Save_ValidationErrors(t *testing.T) {
 	repo := setupTestStrategyRepo(t)
-	svc := service.NewStrategyService(repo)
+	svc := service.NewStrategyService(repo, nil)
 
 	_, err := svc.Save(service.SaveStrategyInput{
 		DexLevel: "not-a-real-level", SoShell: model.SoShellNone, SoStrength: 50,
-	}, 1)
+	}, 1, "")
 	if err != service.ErrInvalidDexLevel {
 		t.Errorf("err = %v, want %v", err, service.ErrInvalidDexLevel)
 	}
 
 	_, err = svc.Save(service.SaveStrategyInput{
 		DexLevel: model.DexLevelLow, SoShell: "not-a-real-shell", SoStrength: 50,
-	}, 1)
+	}, 1, "")
 	if err != service.ErrInvalidSoShell {
 		t.Errorf("err = %v, want %v", err, service.ErrInvalidSoShell)
 	}
 
 	_, err = svc.Save(service.SaveStrategyInput{
 		DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 150,
-	}, 1)
+	}, 1, "")
 	if err != service.ErrInvalidSoStrength {
 		t.Errorf("err = %v, want %v", err, service.ErrInvalidSoStrength)
 	}
@@ -94,12 +94,12 @@ func TestStrategyService_Save_ValidationErrors(t *testing.T) {
 
 func TestStrategyService_SaveThenGetCurrent(t *testing.T) {
 	repo := setupTestStrategyRepo(t)
-	svc := service.NewStrategyService(repo)
+	svc := service.NewStrategyService(repo, nil)
 
 	saved, err := svc.Save(service.SaveStrategyInput{
 		Frida: true, DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES,
 		SoStrength: 70, TargetSos: []string{"libunity.so"}, RootDetect: true,
-	}, 42)
+	}, 42, "")
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}

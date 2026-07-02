@@ -64,7 +64,7 @@ func (h *StrategyHandler) SaveCurrent(c *gin.Context) {
 		DexLevel: req.DexLevel, StringEncrypt: req.StringEncrypt, ResMix: req.ResMix,
 		SoShell: req.SoShell, SoStrength: req.SoStrength, TargetSos: req.TargetSos,
 		RootDetect: req.RootDetect, Signature: req.Signature, AntiHook: req.AntiHook, ResEncrypt: req.ResEncrypt,
-	}, userID)
+	}, userID, c.ClientIP())
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidDexLevel):

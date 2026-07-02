@@ -195,6 +195,24 @@ func TestMigrate_HardeningTables(t *testing.T) {
 	}
 }
 
+func TestMigrate_AuditLogsTable(t *testing.T) {
+	cfg := testConfig()
+	database, err := Connect(cfg)
+	if err != nil {
+		t.Fatalf("Connect() error = %v (is Postgres running?)", err)
+	}
+	if err := Migrate(database); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	if !database.Migrator().HasTable(&model.AuditLog{}) {
+		t.Fatal("expected audit_logs table to exist after Migrate()")
+	}
+	if database.Migrator().HasConstraint(&model.AuditLog{}, "ActorUserID") {
+		t.Fatal("audit_logs.actor_user_id must not have a foreign key constraint")
+	}
+}
+
 func TestDeleteHardeningRowsByTaskNo_RemovesTaskHierarchy(t *testing.T) {
 	cfg := testConfig()
 	database, err := Connect(cfg)

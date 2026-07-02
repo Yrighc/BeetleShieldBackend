@@ -52,19 +52,23 @@ func main() {
 	}
 
 	userRepo := repository.NewUserRepository(database)
-	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours)
+	auditRepo := repository.NewAuditRepository(database)
+	auditService := service.NewAuditService(auditRepo)
+	auditHandler := handler.NewAuditHandler(auditService)
+
+	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, auditService)
 	authHandler := handler.NewAuthHandler(authService)
 
-	userService := service.NewUserService(userRepo)
+	userService := service.NewUserService(userRepo, auditService)
 	userHandler := handler.NewUserHandler(userService)
 
 	appRepo := repository.NewAppRepository(database)
 	hardeningRepo := repository.NewHardeningRepository(database)
-	appService := service.NewAppService(appRepo, hardeningRepo, storageClient, cfg.MaxUploadSizeMB)
+	appService := service.NewAppService(appRepo, hardeningRepo, storageClient, cfg.MaxUploadSizeMB, auditService)
 	appHandler := handler.NewAppHandler(appService)
 
 	strategyRepo := repository.NewStrategyRepository(database)
-	strategyService := service.NewStrategyService(strategyRepo)
+	strategyService := service.NewStrategyService(strategyRepo, auditService)
 	strategyHandler := handler.NewStrategyHandler(strategyService)
 
 	hardeningService := service.NewHardeningService(
@@ -73,6 +77,7 @@ func main() {
 		strategyService,
 		storageClient,
 		cfg.DPTDefaultVMPRules,
+		auditService,
 	)
 	hardeningHandler := handler.NewHardeningHandler(hardeningService)
 	hardeningWorker := worker.NewHardeningWorker(
@@ -99,6 +104,7 @@ func main() {
 		UserHandler:      userHandler,
 		StrategyHandler:  strategyHandler,
 		HardeningHandler: hardeningHandler,
+		AuditHandler:     auditHandler,
 	})
 
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}

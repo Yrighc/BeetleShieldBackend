@@ -55,18 +55,18 @@ func setupUserRouter(t *testing.T) (*httptest.Server, string, string, func()) {
 		t.Fatalf("create auditor user: %v", err)
 	}
 
-	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours)
-	adminToken, _, err := authService.Login(adminUser.Email, "Password123!")
+	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, nil)
+	adminToken, _, err := authService.Login(adminUser.Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("admin Login() error = %v", err)
 	}
-	auditorToken, _, err := authService.Login(auditorUser.Email, "Password123!")
+	auditorToken, _, err := authService.Login(auditorUser.Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("auditor Login() error = %v", err)
 	}
 	authHandler := handler.NewAuthHandler(authService)
 
-	userService := service.NewUserService(userRepo)
+	userService := service.NewUserService(userRepo, nil)
 	userHandler := handler.NewUserHandler(userService)
 
 	r := router.New(router.Deps{

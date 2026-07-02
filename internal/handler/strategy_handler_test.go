@@ -53,19 +53,19 @@ func setupStrategyRouter(t *testing.T) (*httptest.Server, string, string, func()
 		t.Fatalf("create developer user: %v", err)
 	}
 
-	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours)
-	adminToken, _, err := authService.Login(adminUser.Email, "Password123!")
+	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, nil)
+	adminToken, _, err := authService.Login(adminUser.Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("admin Login() error = %v", err)
 	}
-	developerToken, _, err := authService.Login(developerUser.Email, "Password123!")
+	developerToken, _, err := authService.Login(developerUser.Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("developer Login() error = %v", err)
 	}
 	authHandler := handler.NewAuthHandler(authService)
 
 	strategyRepo := repository.NewStrategyRepository(database)
-	strategyService := service.NewStrategyService(strategyRepo)
+	strategyService := service.NewStrategyService(strategyRepo, nil)
 	strategyHandler := handler.NewStrategyHandler(strategyService)
 
 	r := router.New(router.Deps{

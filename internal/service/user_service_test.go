@@ -9,7 +9,7 @@ import (
 
 func TestUserService_Create(t *testing.T) {
 	repo := setupTestUserRepo(t)
-	svc := service.NewUserService(repo)
+	svc := service.NewUserService(repo, nil)
 
 	repo.DeleteByEmail("usersvc-1@beetleshield.com")
 	t.Cleanup(func() { repo.DeleteByEmail("usersvc-1@beetleshield.com") })
@@ -39,7 +39,7 @@ func TestUserService_Create(t *testing.T) {
 
 func TestUserService_Update(t *testing.T) {
 	repo := setupTestUserRepo(t)
-	svc := service.NewUserService(repo)
+	svc := service.NewUserService(repo, nil)
 
 	repo.DeleteByEmail("usersvc-2@beetleshield.com")
 	t.Cleanup(func() { repo.DeleteByEmail("usersvc-2@beetleshield.com") })
@@ -57,7 +57,7 @@ func TestUserService_Update(t *testing.T) {
 	newRole := model.RoleAuditor
 	updated, err := svc.Update(user.ID, service.UpdateUserInput{
 		Name: &newName, Department: &newDept, Role: &newRole,
-	})
+	}, 0, "")
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -65,7 +65,7 @@ func TestUserService_Update(t *testing.T) {
 		t.Errorf("Update() did not apply: %+v", updated)
 	}
 
-	_, err = svc.Update(999999, service.UpdateUserInput{Name: &newName})
+	_, err = svc.Update(999999, service.UpdateUserInput{Name: &newName}, 0, "")
 	if err != service.ErrUserNotFound {
 		t.Errorf("err = %v, want %v", err, service.ErrUserNotFound)
 	}
@@ -73,7 +73,7 @@ func TestUserService_Update(t *testing.T) {
 
 func TestUserService_UpdateStatus(t *testing.T) {
 	repo := setupTestUserRepo(t)
-	svc := service.NewUserService(repo)
+	svc := service.NewUserService(repo, nil)
 
 	repo.DeleteByEmail("usersvc-3@beetleshield.com")
 	t.Cleanup(func() { repo.DeleteByEmail("usersvc-3@beetleshield.com") })
@@ -86,7 +86,7 @@ func TestUserService_UpdateStatus(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if err := svc.UpdateStatus(user.ID, model.UserStatusDisabled, 999999); err != nil {
+	if err := svc.UpdateStatus(user.ID, model.UserStatusDisabled, 999999, ""); err != nil {
 		t.Fatalf("UpdateStatus() error = %v", err)
 	}
 	disabled, err := repo.FindByID(user.ID)
@@ -97,7 +97,7 @@ func TestUserService_UpdateStatus(t *testing.T) {
 		t.Errorf("Status = %q, want %q", disabled.Status, model.UserStatusDisabled)
 	}
 
-	err = svc.UpdateStatus(user.ID, model.UserStatusDisabled, user.ID)
+	err = svc.UpdateStatus(user.ID, model.UserStatusDisabled, user.ID, "")
 	if err != service.ErrCannotDisableSelf {
 		t.Errorf("err = %v, want %v", err, service.ErrCannotDisableSelf)
 	}
@@ -105,7 +105,7 @@ func TestUserService_UpdateStatus(t *testing.T) {
 
 func TestUserService_UpdateStatus_AdminDisablesAnotherAdmin(t *testing.T) {
 	repo := setupTestUserRepo(t)
-	svc := service.NewUserService(repo)
+	svc := service.NewUserService(repo, nil)
 
 	repo.DeleteByEmail("usersvc-admin-a@beetleshield.com")
 	repo.DeleteByEmail("usersvc-admin-b@beetleshield.com")
@@ -130,7 +130,7 @@ func TestUserService_UpdateStatus_AdminDisablesAnotherAdmin(t *testing.T) {
 		t.Fatalf("Create() adminB error = %v", err)
 	}
 
-	if err := svc.UpdateStatus(adminB.ID, model.UserStatusDisabled, adminA.ID); err != nil {
+	if err := svc.UpdateStatus(adminB.ID, model.UserStatusDisabled, adminA.ID, ""); err != nil {
 		t.Fatalf("UpdateStatus() error = %v", err)
 	}
 
