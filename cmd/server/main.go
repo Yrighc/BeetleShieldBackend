@@ -51,11 +51,16 @@ func main() {
 	appService := service.NewAppService(appRepo, storageClient, cfg.MaxUploadSizeMB)
 	appHandler := handler.NewAppHandler(appService)
 
+	strategyRepo := repository.NewStrategyRepository(database)
+	strategyService := service.NewStrategyService(strategyRepo)
+	strategyHandler := handler.NewStrategyHandler(strategyService)
+
 	r := router.New(router.Deps{
-		JWTSecret:   cfg.JWTSecret,
-		AuthHandler: authHandler,
-		AppHandler:  appHandler,
-		UserHandler: userHandler,
+		JWTSecret:       cfg.JWTSecret,
+		AuthHandler:     authHandler,
+		AppHandler:      appHandler,
+		UserHandler:     userHandler,
+		StrategyHandler: strategyHandler,
 	})
 
 	if err := r.Run(":" + cfg.ServerPort); err != nil {

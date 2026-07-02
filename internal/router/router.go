@@ -9,10 +9,11 @@ import (
 )
 
 type Deps struct {
-	JWTSecret   string
-	AuthHandler *handler.AuthHandler
-	AppHandler  *handler.AppHandler
-	UserHandler *handler.UserHandler
+	JWTSecret       string
+	AuthHandler     *handler.AuthHandler
+	AppHandler      *handler.AppHandler
+	UserHandler     *handler.UserHandler
+	StrategyHandler *handler.StrategyHandler
 }
 
 func New(deps Deps) *gin.Engine {
@@ -50,6 +51,14 @@ func New(deps Deps) *gin.Engine {
 			users.POST("", deps.UserHandler.Create)
 			users.PATCH("/:id", deps.UserHandler.Update)
 			users.PATCH("/:id/status", deps.UserHandler.UpdateStatus)
+		}
+
+		strategies := v1.Group("/strategies")
+		strategies.Use(middleware.JWTAuth(deps.JWTSecret))
+		{
+			strategies.GET("/templates", deps.StrategyHandler.Templates)
+			strategies.GET("/current", deps.StrategyHandler.GetCurrent)
+			strategies.PUT("/current", middleware.RequireRole(model.RoleAdmin), deps.StrategyHandler.SaveCurrent)
 		}
 	}
 
