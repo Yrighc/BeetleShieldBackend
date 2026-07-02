@@ -5,6 +5,7 @@ import (
 
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/model"
+	"gorm.io/gorm"
 )
 
 func testConfig() *config.Config {
@@ -126,6 +127,15 @@ func TestMigrate_HardeningTables(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 
+	const taskNo = "TASK-MIGRATION-001"
+	cleanupHardeningRows := func() {
+		if err := deleteHardeningRowsByTaskNo(database, taskNo); err != nil {
+			t.Fatalf("cleanup hardening rows: %v", err)
+		}
+	}
+	cleanupHardeningRows()
+	defer cleanupHardeningRows()
+
 	app := model.App{
 		Name:        "Hardening Migration Test",
 		PackageName: "com.hardening.migration.test",
@@ -144,7 +154,7 @@ func TestMigrate_HardeningTables(t *testing.T) {
 	defer database.Unscoped().Where("package_name = ?", app.PackageName).Delete(&model.App{})
 
 	task := model.HardeningTask{
-		TaskNo:           "TASK-MIGRATION-001",
+		TaskNo:           taskNo,
 		AppID:            app.ID,
 		Status:           model.HardeningTaskStatusQueued,
 		StrategyName:     "默认加固模板",
@@ -178,4 +188,15 @@ func TestMigrate_HardeningTables(t *testing.T) {
 	if err := database.Create(&logLine).Error; err != nil {
 		t.Fatalf("create hardening log: %v", err)
 	}
+}
+
+func deleteHardeningRowsByTaskNo(database *gorm.DB, taskNo string) error {
+	subQuery := database.Model(&model.HardeningTask{}).Select("id").Where("task_no = ?", taskNo)
+	if err := database.Unscoped().Where("task_id IN (?)", subQuery).Delete(&model.HardeningLog{}).Error; err != nil {
+		return err
+	}
+	if err := database.Unscoped().Where("task_id IN (?)", subQuery).Delete(&model.HardeningStep{}).Error; err != nil {
+		return err
+	}
+	return nil
 }
