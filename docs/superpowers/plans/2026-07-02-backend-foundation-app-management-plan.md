@@ -20,7 +20,8 @@ Reference spec: [`docs/superpowers/specs/2026-07-02-backend-foundation-app-manag
 - MinIO bucket name comes from `MINIO_BUCKET` config; object key pattern is `{packageName}/{sha256 first 12 chars}/{original filename}`.
 - Enums: `users.role` ∈ {`admin`, `developer`, `auditor`}; `users.status` ∈ {`active`, `disabled`}; `apps.status` ∈ {`unprotected`, `processing`, `completed`, `failed`}; `apps.tag` ∈ {`finance`, `game`, `tool`, `ecommerce`}; `apps.risk_level` ∈ {`low`, `medium`, `high`, `critical`} (nullable, unset in this phase).
 - All `/api/v1/apps/*` routes require a valid JWT (`Authorization: Bearer <token>`). Fine-grained per-role write restrictions are deferred to the future user-management sub-project.
-- Integration tests (anything touching Postgres or MinIO) assume `make dev-up` (docker-compose) is already running, and print a hint in the failure message if the connection fails.
+- Integration tests (anything touching Postgres or MinIO) assume a local Postgres and MinIO are already running, and print a hint in the failure message if the connection fails.
+- **Local dev DB/MinIO amendment (added after Task 1 landed):** this machine already runs its own long-lived `pg12-dev` (Postgres, user `root` / password `root`, database `beetleshield` already created) and `minio-dev` (root user `admin` / password `yuan801200`, endpoint `localhost:9000`) containers used across the developer's other local projects, occupying ports 5432 and 9000-9001. Rather than fighting that port conflict, local dev and all integration tests in this plan connect directly to those existing containers instead of the project's own `docker-compose.yml`. Every test helper's hardcoded Postgres credentials in this plan use `DBUser: "root", DBPassword: "root"` (DBName stays `"beetleshield"`), and every hardcoded `NewMinioStorage(...)` call uses `"admin", "yuan801200"` — this has already been applied throughout the plan text below. `docker-compose.yml` (from Task 1) is kept as-is for production orchestration (per explicit instruction) and is not used for local dev/test right now. The real local `.env` (gitignored, not committed) is updated to match these credentials; `.env.example` stays generic/unchanged as a template for environments that do use the bundled `docker-compose.yml`.
 
 ---
 
@@ -800,8 +801,8 @@ func testConfig() *config.Config {
 	return &config.Config{
 		DBHost:     "localhost",
 		DBPort:     "5432",
-		DBUser:     "beetleshield",
-		DBPassword: "beetleshield",
+		DBUser:     "root",
+		DBPassword: "root",
 		DBName:     "beetleshield",
 		DBSSLMode:  "disable",
 	}
@@ -859,6 +860,8 @@ Expected: FAIL — `Connect`/`Migrate`/`SeedAdmin` undefined.
 ```bash
 go get gorm.io/gorm gorm.io/driver/postgres
 ```
+
+Note: on this project's configured Go module proxy, a plain `go get gorm.io/driver/postgres` may resolve to a stale `v1.2.3` that doesn't compile against a current `gorm.io/gorm`. If `go build ./...` fails with a `ColumnType`/`AutoIncrement` compile error after this step, run `go get gorm.io/driver/postgres@v1.6.0` (the newest version available on this proxy) followed by `go mod tidy`, then continue.
 
 Create `internal/db/db.go`:
 
@@ -1251,7 +1254,7 @@ func setupTestUserRepo(t *testing.T) *repository.UserRepository {
 	t.Helper()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
-		DBUser: "beetleshield", DBPassword: "beetleshield",
+		DBUser: "root", DBPassword: "root",
 		DBName: "beetleshield", DBSSLMode: "disable",
 	}
 	database, err := db.Connect(cfg)
@@ -1432,7 +1435,7 @@ func setupAuthRouter(t *testing.T) (*httptest.Server, func()) {
 	t.Helper()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
-		DBUser: "beetleshield", DBPassword: "beetleshield",
+		DBUser: "root", DBPassword: "root",
 		DBName: "beetleshield", DBSSLMode: "disable",
 		JWTSecret: "test-secret", JWTExpireHours: 1,
 	}
@@ -1875,7 +1878,7 @@ import (
 
 func newTestStorage(t *testing.T) *MinioStorage {
 	t.Helper()
-	s, err := NewMinioStorage("localhost:9000", "beetleshield", "beetleshield123", "test-bucket", false)
+	s, err := NewMinioStorage("localhost:9000", "admin", "yuan801200", "test-bucket", false)
 	if err != nil {
 		t.Fatalf("NewMinioStorage() error = %v", err)
 	}
@@ -2160,7 +2163,7 @@ func setupAppRepo(t *testing.T) *AppRepository {
 	t.Helper()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
-		DBUser: "beetleshield", DBPassword: "beetleshield",
+		DBUser: "root", DBPassword: "root",
 		DBName: "beetleshield", DBSSLMode: "disable",
 	}
 	database, err := db.Connect(cfg)
@@ -2414,7 +2417,7 @@ func setupAppService(t *testing.T) *service.AppService {
 	t.Helper()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
-		DBUser: "beetleshield", DBPassword: "beetleshield",
+		DBUser: "root", DBPassword: "root",
 		DBName: "beetleshield", DBSSLMode: "disable",
 	}
 	database, err := db.Connect(cfg)
@@ -2426,7 +2429,7 @@ func setupAppService(t *testing.T) *service.AppService {
 	}
 	appRepo := repository.NewAppRepository(database)
 
-	st, err := storage.NewMinioStorage("localhost:9000", "beetleshield", "beetleshield123", "test-bucket", false)
+	st, err := storage.NewMinioStorage("localhost:9000", "admin", "yuan801200", "test-bucket", false)
 	if err != nil {
 		t.Fatalf("NewMinioStorage() error = %v", err)
 	}
@@ -2774,7 +2777,7 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, func()) {
 	t.Helper()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
-		DBUser: "beetleshield", DBPassword: "beetleshield",
+		DBUser: "root", DBPassword: "root",
 		DBName: "beetleshield", DBSSLMode: "disable",
 		JWTSecret: "test-secret", JWTExpireHours: 1,
 		MaxUploadSizeMB: 10,
@@ -2805,7 +2808,7 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, func()) {
 	}
 	authHandler := handler.NewAuthHandler(authService)
 
-	st, err := storage.NewMinioStorage("localhost:9000", "beetleshield", "beetleshield123", "test-bucket", false)
+	st, err := storage.NewMinioStorage("localhost:9000", "admin", "yuan801200", "test-bucket", false)
 	if err != nil {
 		t.Fatalf("NewMinioStorage() error = %v", err)
 	}

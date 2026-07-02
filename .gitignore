@@ -2,3 +2,5 @@
 *.log
 tmp/
 dist/
+
+.DS_Store
