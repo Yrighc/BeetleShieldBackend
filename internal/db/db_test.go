@@ -81,3 +81,37 @@ func TestMigrate_AppsTable(t *testing.T) {
 
 	database.Unscoped().Where("package_name = ?", testApp.PackageName).Delete(&model.App{})
 }
+
+func TestMigrate_StrategiesTable(t *testing.T) {
+	cfg := testConfig()
+	database, err := Connect(cfg)
+	if err != nil {
+		t.Fatalf("Connect() error = %v (is Postgres running?)", err)
+	}
+	if err := Migrate(database); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	testStrategy := model.Strategy{
+		DexLevel:   model.DexLevelHigh,
+		SoShell:    model.SoShellVMP,
+		SoStrength: 90,
+		TargetSos:  []string{"libnative-lib.so"},
+		UpdatedBy:  999999,
+	}
+	database.Unscoped().Where("updated_by = ?", uint(999999)).Delete(&model.Strategy{})
+
+	if err := database.Create(&testStrategy).Error; err != nil {
+		t.Fatalf("failed to insert into strategies table: %v", err)
+	}
+
+	var readBack model.Strategy
+	if err := database.First(&readBack, testStrategy.ID).Error; err != nil {
+		t.Fatalf("failed to read back inserted strategy: %v", err)
+	}
+	if len(readBack.TargetSos) != 1 || readBack.TargetSos[0] != "libnative-lib.so" {
+		t.Errorf("TargetSos not round-tripped correctly via JSON serializer: %+v", readBack.TargetSos)
+	}
+
+	database.Unscoped().Where("updated_by = ?", uint(999999)).Delete(&model.Strategy{})
+}
