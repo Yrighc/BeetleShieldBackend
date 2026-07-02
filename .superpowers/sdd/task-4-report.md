@@ -150,3 +150,121 @@ Completed Task 4: implemented `HardeningService` create, list, get, logs, histor
    PASS
    ok  	beetleshield-backend/internal/repository	1.277s
    ```
+
+## Fix Follow-Up 2
+
+### Files Changed
+
+- `internal/repository/hardening_repository_test.go`
+- `.superpowers/sdd/task-4-report.md`
+
+### Reviewer Findings Addressed
+
+- Replaced broad shared repository-test cleanup with a per-run scope used for package names and task numbers.
+- Scoped hardening repository cleanup to only the current run's logs, steps, tasks, and apps.
+- Preserved the existing repository assertions and concurrency coverage while adding a regression that proves scoped cleanup leaves a different scope intact.
+- Made the queue-order test deterministic without returning to global cleanup by backdating only that test's two queued fixtures.
+
+### Exact Test Results
+
+1. Command:
+   ```bash
+   go test ./internal/repository -run 'HardeningRepository|AppRepository' -v
+   ```
+
+   Result:
+   ```text
+   === RUN   TestAppRepository_CreateFindDelete
+
+   2026/07/02 18:26:33 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/app_repository.go:31 record not found
+   [0.199ms] [rows:0] SELECT * FROM "apps" WHERE "apps"."id" = 245 ORDER BY "apps"."id" LIMIT 1
+   --- PASS: TestAppRepository_CreateFindDelete (0.10s)
+   === RUN   TestAppRepository_ListFilters
+   --- PASS: TestAppRepository_ListFilters (0.09s)
+   === RUN   TestAppRepository_UpdateStatus
+   --- PASS: TestAppRepository_UpdateStatus (0.09s)
+   === RUN   TestHardeningRepository_CreateTaskWithStepsAndActiveCheck
+   --- PASS: TestHardeningRepository_CreateTaskWithStepsAndActiveCheck (0.10s)
+   === RUN   TestHardeningRepository_CreateTaskWithStepsForAppAtomic
+   --- PASS: TestHardeningRepository_CreateTaskWithStepsForAppAtomic (0.11s)
+   === RUN   TestHardeningRepository_CreateTaskWithStepsForAppConcurrent
+   --- PASS: TestHardeningRepository_CreateTaskWithStepsForAppConcurrent (0.11s)
+   === RUN   TestHardeningRepository_QueueStepLogAndCompletion
+   --- PASS: TestHardeningRepository_QueueStepLogAndCompletion (0.14s)
+   === RUN   TestHardeningRepository_FailedTaskAndStepTransitions
+   --- PASS: TestHardeningRepository_FailedTaskAndStepTransitions (0.11s)
+   === RUN   TestHardeningRepository_TransitionStateGuards
+   --- PASS: TestHardeningRepository_TransitionStateGuards (0.12s)
+   === RUN   TestHardeningRepository_ListLogsAndRecoverRunning
+   --- PASS: TestHardeningRepository_ListLogsAndRecoverRunning (0.14s)
+   PASS
+   ok  	beetleshield-backend/internal/repository	1.317s
+   ```
+
+2. Command:
+   ```bash
+   go test ./internal/service -run 'HardeningService|NormalizeVMPRules|BuildDPTCommand|SHA256File' -v
+   ```
+
+   Result:
+   ```text
+   === RUN   TestNormalizeVMPRules_DefaultAndCustom
+   --- PASS: TestNormalizeVMPRules_DefaultAndCustom (0.00s)
+   === RUN   TestBuildDPTCommand_HighStrengthMapping
+   --- PASS: TestBuildDPTCommand_HighStrengthMapping (0.00s)
+   === RUN   TestBuildDPTCommand_DeduplicatesHookAndVMP
+   --- PASS: TestBuildDPTCommand_DeduplicatesHookAndVMP (0.00s)
+   === RUN   TestSHA256FileAndSignedTestArtifactPath
+   --- PASS: TestSHA256FileAndSignedTestArtifactPath (0.00s)
+   === RUN   TestHardeningService_CreateDefaultsAndSetsAppProcessing
+
+   2026/07/02 18:26:33 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/strategy_repository.go:19 record not found
+   [0.276ms] [rows:0] SELECT * FROM "strategies" ORDER BY id ASC,"strategies"."id" LIMIT 1
+   --- PASS: TestHardeningService_CreateDefaultsAndSetsAppProcessing (0.13s)
+   === RUN   TestHardeningService_CreateRejectsActiveTask
+
+   2026/07/02 18:26:33 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/strategy_repository.go:19 record not found
+   [0.223ms] [rows:0] SELECT * FROM "strategies" ORDER BY id ASC,"strategies"."id" LIMIT 1
+
+   2026/07/02 18:26:33 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/strategy_repository.go:19 record not found
+   [0.235ms] [rows:0] SELECT * FROM "strategies" ORDER BY id ASC,"strategies"."id" LIMIT 1
+   --- PASS: TestHardeningService_CreateRejectsActiveTask (0.11s)
+   === RUN   TestHardeningService_CreateUsesCustomSnapshotAndRules
+   --- PASS: TestHardeningService_CreateUsesCustomSnapshotAndRules (0.11s)
+   === RUN   TestHardeningService_GetLogsAndHistory
+
+   2026/07/02 18:26:33 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/strategy_repository.go:19 record not found
+   [0.217ms] [rows:0] SELECT * FROM "strategies" ORDER BY id ASC,"strategies"."id" LIMIT 1
+   --- PASS: TestHardeningService_GetLogsAndHistory (0.13s)
+   === RUN   TestHardeningService_DownloadURLArtifacts
+
+   2026/07/02 18:26:33 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/strategy_repository.go:19 record not found
+   [0.274ms] [rows:0] SELECT * FROM "strategies" ORDER BY id ASC,"strategies"."id" LIMIT 1
+   --- PASS: TestHardeningService_DownloadURLArtifacts (0.11s)
+   === RUN   TestHardeningService_DownloadURLErrors
+
+   2026/07/02 18:26:34 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/strategy_repository.go:19 record not found
+   [0.225ms] [rows:0] SELECT * FROM "strategies" ORDER BY id ASC,"strategies"."id" LIMIT 1
+   --- PASS: TestHardeningService_DownloadURLErrors (0.12s)
+   === RUN   TestHardeningService_ErrorMappings
+
+   2026/07/02 18:26:34 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/hardening_repository.go:243 record not found
+   [0.333ms] [rows:0] SELECT * FROM "hardening_tasks" WHERE "hardening_tasks"."id" = 999999 ORDER BY "hardening_tasks"."id" LIMIT 1
+
+   2026/07/02 18:26:34 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/hardening_repository.go:243 record not found
+   [0.252ms] [rows:0] SELECT * FROM "hardening_tasks" WHERE "hardening_tasks"."id" = 999999 ORDER BY "hardening_tasks"."id" LIMIT 1
+
+   2026/07/02 18:26:34 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/app_repository.go:31 record not found
+   [0.365ms] [rows:0] SELECT * FROM "apps" WHERE "apps"."id" = 999999 ORDER BY "apps"."id" LIMIT 1
+
+   2026/07/02 18:26:34 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/hardening_repository.go:243 record not found
+   [0.202ms] [rows:0] SELECT * FROM "hardening_tasks" WHERE "hardening_tasks"."id" = 999999 ORDER BY "hardening_tasks"."id" LIMIT 1
+
+   2026/07/02 18:26:34 /Users/yrighc/work/hzyz/project/BeetleShieldBackend/internal/repository/hardening_repository.go:243 record not found
+   [0.174ms] [rows:0] SELECT * FROM "hardening_tasks" WHERE "hardening_tasks"."id" = 999999 ORDER BY "hardening_tasks"."id" LIMIT 1
+   --- PASS: TestHardeningService_ErrorMappings (0.09s)
+   === RUN   TestHardeningService_CreateRejectsConcurrentActiveTask
+   --- PASS: TestHardeningService_CreateRejectsConcurrentActiveTask (0.10s)
+   PASS
+   ok  	beetleshield-backend/internal/service	1.341s
+   ```

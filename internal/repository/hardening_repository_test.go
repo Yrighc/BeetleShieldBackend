@@ -14,8 +14,31 @@ import (
 	"beetleshield-backend/internal/model"
 )
 
-func setupHardeningRepo(t *testing.T) (*HardeningRepository, *AppRepository, *gorm.DB) {
+type hardeningRepoTestScope struct {
+	runID string
+}
+
+func newHardeningRepoTestScope() hardeningRepoTestScope {
+	return hardeningRepoTestScope{
+		runID: fmt.Sprintf("%08x", time.Now().UnixNano()&0xffffffff),
+	}
+}
+
+func (s hardeningRepoTestScope) packageNamePrefix() string {
+	return "com.hardening.repo." + s.runID
+}
+
+func (s hardeningRepoTestScope) packageName(suffix string) string {
+	return s.packageNamePrefix() + "." + suffix
+}
+
+func (s hardeningRepoTestScope) taskNo(suffix string) string {
+	return "TASK-REPO-" + s.runID + "-" + suffix
+}
+
+func setupHardeningRepo(t *testing.T) (*HardeningRepository, *AppRepository, *gorm.DB, hardeningRepoTestScope) {
 	t.Helper()
+	scope := newHardeningRepoTestScope()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
 		DBUser: "root", DBPassword: "root",
@@ -28,24 +51,35 @@ func setupHardeningRepo(t *testing.T) (*HardeningRepository, *AppRepository, *go
 	if err := db.Migrate(database); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	cleanupHardeningRepoData(t, database)
-	t.Cleanup(func() { cleanupHardeningRepoData(t, database) })
-	return NewHardeningRepository(database), NewAppRepository(database), database
+	cleanupHardeningRepoData(t, database, scope)
+	t.Cleanup(func() { cleanupHardeningRepoData(t, database, scope) })
+	return NewHardeningRepository(database), NewAppRepository(database), database, scope
 }
 
-func cleanupHardeningRepoData(t *testing.T, database *gorm.DB) {
+func cleanupHardeningRepoData(t *testing.T, database *gorm.DB, scope hardeningRepoTestScope) {
 	t.Helper()
-	database.Exec("DELETE FROM hardening_logs WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-REPO-%')")
-	database.Exec("DELETE FROM hardening_steps WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-REPO-%')")
-	database.Unscoped().Where("task_no LIKE ?", "TASK-REPO-%").Delete(&model.HardeningTask{})
-	database.Unscoped().Where("package_name LIKE ?", "com.hardening.repo.%").Delete(&model.App{})
+
+	database.Exec(`
+		DELETE FROM hardening_logs
+		WHERE task_id IN (
+			SELECT id FROM hardening_tasks WHERE task_no LIKE ?
+		)
+	`, scope.taskNo("%"))
+	database.Exec(`
+		DELETE FROM hardening_steps
+		WHERE task_id IN (
+			SELECT id FROM hardening_tasks WHERE task_no LIKE ?
+		)
+	`, scope.taskNo("%"))
+	database.Unscoped().Where("task_no LIKE ?", scope.taskNo("%")).Delete(&model.HardeningTask{})
+	database.Unscoped().Where("package_name LIKE ?", scope.packageNamePrefix()+".%").Delete(&model.App{})
 }
 
-func createRepoApp(t *testing.T, appRepo *AppRepository, suffix string) model.App {
+func createRepoApp(t *testing.T, appRepo *AppRepository, scope hardeningRepoTestScope, suffix string) model.App {
 	t.Helper()
 	app := model.App{
 		Name:        "Repo App " + suffix,
-		PackageName: "com.hardening.repo." + suffix,
+		PackageName: scope.packageName(suffix),
 		Version:     "1.0.0",
 		Tag:         model.AppTagTool,
 		Status:      model.AppStatusUnprotected,
@@ -60,9 +94,9 @@ func createRepoApp(t *testing.T, appRepo *AppRepository, suffix string) model.Ap
 	return app
 }
 
-func newRepoTask(taskNo string, appID uint, status model.HardeningTaskStatus) model.HardeningTask {
+func newRepoTask(scope hardeningRepoTestScope, suffix string, appID uint, status model.HardeningTaskStatus) model.HardeningTask {
 	return model.HardeningTask{
-		TaskNo:           taskNo,
+		TaskNo:           scope.taskNo(suffix),
 		AppID:            appID,
 		Status:           status,
 		StrategyName:     "默认加固模板",
@@ -73,9 +107,9 @@ func newRepoTask(taskNo string, appID uint, status model.HardeningTaskStatus) mo
 }
 
 func TestHardeningRepository_CreateTaskWithStepsAndActiveCheck(t *testing.T) {
-	repo, appRepo, _ := setupHardeningRepo(t)
-	app := createRepoApp(t, appRepo, "active")
-	task := newRepoTask("TASK-REPO-ACTIVE", app.ID, model.HardeningTaskStatusQueued)
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "active")
+	task := newRepoTask(scope, "active", app.ID, model.HardeningTaskStatusQueued)
 
 	if err := repo.CreateTaskWithSteps(&task); err != nil {
 		t.Fatalf("CreateTaskWithSteps() error = %v", err)
@@ -103,9 +137,9 @@ func TestHardeningRepository_CreateTaskWithStepsAndActiveCheck(t *testing.T) {
 }
 
 func TestHardeningRepository_CreateTaskWithStepsForAppAtomic(t *testing.T) {
-	repo, appRepo, _ := setupHardeningRepo(t)
-	app := createRepoApp(t, appRepo, "atomic")
-	task := newRepoTask("TASK-REPO-ATOMIC", app.ID, model.HardeningTaskStatusQueued)
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "atomic")
+	task := newRepoTask(scope, "atomic", app.ID, model.HardeningTaskStatusQueued)
 
 	if err := repo.CreateTaskWithStepsForApp(&task, model.AppStatusProcessing); err != nil {
 		t.Fatalf("CreateTaskWithStepsForApp() error = %v", err)
@@ -127,15 +161,15 @@ func TestHardeningRepository_CreateTaskWithStepsForAppAtomic(t *testing.T) {
 		t.Fatalf("len(steps) = %d, want %d", len(steps), len(defaultHardeningSteps))
 	}
 
-	second := newRepoTask("TASK-REPO-ATOMIC-DUP", app.ID, model.HardeningTaskStatusQueued)
+	second := newRepoTask(scope, "atomic-dup", app.ID, model.HardeningTaskStatusQueued)
 	if err := repo.CreateTaskWithStepsForApp(&second, model.AppStatusProcessing); !errors.Is(err, ErrActiveHardeningTaskExists) {
 		t.Fatalf("duplicate CreateTaskWithStepsForApp() err = %v, want %v", err, ErrActiveHardeningTaskExists)
 	}
 }
 
 func TestHardeningRepository_CreateTaskWithStepsForAppConcurrent(t *testing.T) {
-	repo, appRepo, _ := setupHardeningRepo(t)
-	app := createRepoApp(t, appRepo, "atomic-concurrent")
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "atomic-concurrent")
 
 	start := make(chan struct{})
 	errs := make(chan error, 2)
@@ -145,7 +179,7 @@ func TestHardeningRepository_CreateTaskWithStepsForAppConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			task := newRepoTask(fmt.Sprintf("TASK-REPO-ATOMIC-CONCURRENT-%d", idx), app.ID, model.HardeningTaskStatusQueued)
+			task := newRepoTask(scope, fmt.Sprintf("atomic-concurrent-%d", idx), app.ID, model.HardeningTaskStatusQueued)
 			<-start
 			errs <- repo.CreateTaskWithStepsForApp(&task, model.AppStatusProcessing)
 		}(i)
@@ -181,10 +215,10 @@ func TestHardeningRepository_CreateTaskWithStepsForAppConcurrent(t *testing.T) {
 }
 
 func TestHardeningRepository_QueueStepLogAndCompletion(t *testing.T) {
-	repo, appRepo, _ := setupHardeningRepo(t)
-	app := createRepoApp(t, appRepo, "queue")
-	first := newRepoTask("TASK-REPO-QUEUE-1", app.ID, model.HardeningTaskStatusQueued)
-	second := newRepoTask("TASK-REPO-QUEUE-2", app.ID, model.HardeningTaskStatusQueued)
+	repo, appRepo, database, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "queue")
+	first := newRepoTask(scope, "queue-1", app.ID, model.HardeningTaskStatusQueued)
+	second := newRepoTask(scope, "queue-2", app.ID, model.HardeningTaskStatusQueued)
 	if err := repo.CreateTaskWithSteps(&second); err != nil {
 		t.Fatalf("Create second: %v", err)
 	}
@@ -192,13 +226,19 @@ func TestHardeningRepository_QueueStepLogAndCompletion(t *testing.T) {
 	if err := repo.CreateTaskWithSteps(&first); err != nil {
 		t.Fatalf("Create first: %v", err)
 	}
+	if err := database.Model(&model.HardeningTask{}).Where("id = ?", second.ID).Update("created_at", time.Unix(1, 0)).Error; err != nil {
+		t.Fatalf("backdate second created_at: %v", err)
+	}
+	if err := database.Model(&model.HardeningTask{}).Where("id = ?", first.ID).Update("created_at", time.Unix(2, 0)).Error; err != nil {
+		t.Fatalf("backdate first created_at: %v", err)
+	}
 
 	next, err := repo.NextQueuedTask()
 	if err != nil {
 		t.Fatalf("NextQueuedTask() error = %v", err)
 	}
-	if next.TaskNo != "TASK-REPO-QUEUE-2" {
-		t.Fatalf("next task = %s, want TASK-REPO-QUEUE-2", next.TaskNo)
+	if next.TaskNo != second.TaskNo {
+		t.Fatalf("next task = %s, want %s", next.TaskNo, second.TaskNo)
 	}
 
 	now := time.Now()
@@ -247,9 +287,9 @@ func TestHardeningRepository_QueueStepLogAndCompletion(t *testing.T) {
 }
 
 func TestHardeningRepository_FailedTaskAndStepTransitions(t *testing.T) {
-	repo, appRepo, _ := setupHardeningRepo(t)
-	app := createRepoApp(t, appRepo, "failed")
-	task := newRepoTask("TASK-REPO-FAILED", app.ID, model.HardeningTaskStatusQueued)
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "failed")
+	task := newRepoTask(scope, "failed", app.ID, model.HardeningTaskStatusQueued)
 	if err := repo.CreateTaskWithSteps(&task); err != nil {
 		t.Fatalf("CreateTaskWithSteps() error = %v", err)
 	}
@@ -290,9 +330,9 @@ func TestHardeningRepository_FailedTaskAndStepTransitions(t *testing.T) {
 }
 
 func TestHardeningRepository_TransitionStateGuards(t *testing.T) {
-	repo, appRepo, _ := setupHardeningRepo(t)
-	app := createRepoApp(t, appRepo, "guards")
-	task := newRepoTask("TASK-REPO-GUARDS", app.ID, model.HardeningTaskStatusQueued)
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "guards")
+	task := newRepoTask(scope, "guards", app.ID, model.HardeningTaskStatusQueued)
 	if err := repo.CreateTaskWithSteps(&task); err != nil {
 		t.Fatalf("CreateTaskWithSteps() error = %v", err)
 	}
@@ -333,12 +373,12 @@ func TestHardeningRepository_TransitionStateGuards(t *testing.T) {
 }
 
 func TestHardeningRepository_ListLogsAndRecoverRunning(t *testing.T) {
-	repo, appRepo, _ := setupHardeningRepo(t)
-	app := createRepoApp(t, appRepo, "history")
-	otherApp := createRepoApp(t, appRepo, "history-other")
-	completed := newRepoTask("TASK-REPO-HISTORY-COMPLETED", app.ID, model.HardeningTaskStatusCompleted)
-	running := newRepoTask("TASK-REPO-HISTORY-RUNNING", app.ID, model.HardeningTaskStatusRunning)
-	other := newRepoTask("TASK-REPO-HISTORY-OTHER", otherApp.ID, model.HardeningTaskStatusFailed)
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "history")
+	otherApp := createRepoApp(t, appRepo, scope, "history-other")
+	completed := newRepoTask(scope, "history-completed", app.ID, model.HardeningTaskStatusCompleted)
+	running := newRepoTask(scope, "history-running", app.ID, model.HardeningTaskStatusRunning)
+	other := newRepoTask(scope, "history-other", otherApp.ID, model.HardeningTaskStatusFailed)
 	if err := repo.CreateTaskWithSteps(&completed); err != nil {
 		t.Fatalf("Create completed: %v", err)
 	}
@@ -443,5 +483,59 @@ func TestHardeningRepository_ListLogsAndRecoverRunning(t *testing.T) {
 	}
 	if recoveredStep.Status != model.HardeningStepStatusFailed || recoveredStep.ErrorMessage != "服务重启导致任务中断" {
 		t.Fatalf("unexpected recovered step: %+v", recoveredStep)
+	}
+}
+
+func TestCleanupHardeningRepoData_OnlyRemovesScopedRows(t *testing.T) {
+	_, appRepo, database, scope := setupHardeningRepo(t)
+	otherScope := newHardeningRepoTestScope()
+	t.Cleanup(func() { cleanupHardeningRepoData(t, database, otherScope) })
+
+	scopedApp := createRepoApp(t, appRepo, scope, "cleanup")
+	otherApp := createRepoApp(t, appRepo, otherScope, "cleanup")
+
+	scopedTask := newRepoTask(scope, "cleanup", scopedApp.ID, model.HardeningTaskStatusQueued)
+	otherTask := newRepoTask(otherScope, "cleanup", otherApp.ID, model.HardeningTaskStatusQueued)
+
+	repo := NewHardeningRepository(database)
+	if err := repo.CreateTaskWithSteps(&scopedTask); err != nil {
+		t.Fatalf("CreateTaskWithSteps() scoped error = %v", err)
+	}
+	if err := repo.CreateTaskWithSteps(&otherTask); err != nil {
+		t.Fatalf("CreateTaskWithSteps() other error = %v", err)
+	}
+
+	cleanupHardeningRepoData(t, database, scope)
+
+	var scopedTaskCount int64
+	if err := database.Model(&model.HardeningTask{}).Where("task_no = ?", scopedTask.TaskNo).Count(&scopedTaskCount).Error; err != nil {
+		t.Fatalf("count scoped task: %v", err)
+	}
+	if scopedTaskCount != 0 {
+		t.Fatalf("scoped task count = %d, want 0", scopedTaskCount)
+	}
+
+	var otherTaskCount int64
+	if err := database.Model(&model.HardeningTask{}).Where("task_no = ?", otherTask.TaskNo).Count(&otherTaskCount).Error; err != nil {
+		t.Fatalf("count other task: %v", err)
+	}
+	if otherTaskCount != 1 {
+		t.Fatalf("other task count = %d, want 1", otherTaskCount)
+	}
+
+	var scopedAppCount int64
+	if err := database.Model(&model.App{}).Where("package_name = ?", scopedApp.PackageName).Count(&scopedAppCount).Error; err != nil {
+		t.Fatalf("count scoped app: %v", err)
+	}
+	if scopedAppCount != 0 {
+		t.Fatalf("scoped app count = %d, want 0", scopedAppCount)
+	}
+
+	var otherAppCount int64
+	if err := database.Model(&model.App{}).Where("package_name = ?", otherApp.PackageName).Count(&otherAppCount).Error; err != nil {
+		t.Fatalf("count other app: %v", err)
+	}
+	if otherAppCount != 1 {
+		t.Fatalf("other app count = %d, want 1", otherAppCount)
 	}
 }
