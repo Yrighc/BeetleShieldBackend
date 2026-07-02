@@ -118,11 +118,14 @@ func (h *AppHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.appService.Delete(c.Request.Context(), uint(id)); err != nil {
-		if errors.Is(err, service.ErrAppNotFound) {
+		switch {
+		case errors.Is(err, service.ErrAppNotFound):
 			response.Error(c, http.StatusNotFound, 40402, "应用不存在")
-			return
+		case errors.Is(err, service.ErrAppHasActiveHardeningTask):
+			response.Error(c, http.StatusConflict, 40902, "应用存在进行中的加固任务，无法删除")
+		default:
+			response.Error(c, http.StatusInternalServerError, 50003, "删除应用失败")
 		}
-		response.Error(c, http.StatusInternalServerError, 50003, "删除应用失败")
 		return
 	}
 

@@ -21,10 +21,11 @@ import (
 )
 
 var (
-	ErrUnsupportedFileType = errors.New("unsupported file type, only .apk and .aab are allowed")
-	ErrFileTooLarge        = errors.New("file exceeds the maximum allowed size")
-	ErrMissingPackageInfo  = errors.New("could not determine package name/version, please provide them manually")
-	ErrAppNotFound         = errors.New("app not found")
+	ErrUnsupportedFileType       = errors.New("unsupported file type, only .apk and .aab are allowed")
+	ErrFileTooLarge              = errors.New("file exceeds the maximum allowed size")
+	ErrMissingPackageInfo        = errors.New("could not determine package name/version, please provide them manually")
+	ErrAppNotFound               = errors.New("app not found")
+	ErrAppHasActiveHardeningTask = errors.New("app has an active hardening task and cannot be deleted")
 )
 
 type UploadInput struct {
@@ -37,12 +38,13 @@ type UploadInput struct {
 
 type AppService struct {
 	appRepo         *repository.AppRepository
+	hardeningRepo   *repository.HardeningRepository
 	storage         *storage.MinioStorage
 	maxUploadSizeMB int64
 }
 
-func NewAppService(appRepo *repository.AppRepository, storage *storage.MinioStorage, maxUploadSizeMB int64) *AppService {
-	return &AppService{appRepo: appRepo, storage: storage, maxUploadSizeMB: maxUploadSizeMB}
+func NewAppService(appRepo *repository.AppRepository, hardeningRepo *repository.HardeningRepository, storage *storage.MinioStorage, maxUploadSizeMB int64) *AppService {
+	return &AppService{appRepo: appRepo, hardeningRepo: hardeningRepo, storage: storage, maxUploadSizeMB: maxUploadSizeMB}
 }
 
 // Upload 是一个处理应用文件上传的方法
@@ -175,6 +177,15 @@ func (s *AppService) Delete(ctx context.Context, id uint) error {
 	if err != nil {
 		return ErrAppNotFound
 	}
+
+	hasActive, err := s.hardeningRepo.HasActiveTaskForApp(id)
+	if err != nil {
+		return fmt.Errorf("check active hardening task: %w", err)
+	}
+	if hasActive {
+		return ErrAppHasActiveHardeningTask
+	}
+
 	if err := s.appRepo.Delete(id); err != nil {
 		return fmt.Errorf("delete app record: %w", err)
 	}

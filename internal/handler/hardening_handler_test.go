@@ -328,8 +328,8 @@ func TestHardeningHandler_ReadRoutesAllowAuditor(t *testing.T) {
 	if err := repo.MarkTaskRunning(taskID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	if err := repo.MarkTaskCompleted(taskID, "handler/unsigned.apk", 10, "abc", "", 0, "", now); err != nil {
-		t.Fatalf("MarkTaskCompleted() error = %v", err)
+	if err := repo.CompleteTaskForApp(taskID, "handler/unsigned.apk", 10, "abc", "", 0, "", now); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 
 	type routeCheck struct {

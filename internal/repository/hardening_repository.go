@@ -54,12 +54,6 @@ func requireUpdatedRow(result *gorm.DB) error {
 	return nil
 }
 
-func (r *HardeningRepository) CreateTaskWithSteps(task *model.HardeningTask) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		return createTaskWithDefaultSteps(tx, task)
-	})
-}
-
 func (r *HardeningRepository) CreateTaskWithStepsForApp(task *model.HardeningTask, appStatus model.AppStatus) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var app model.App
@@ -135,19 +129,21 @@ func (r *HardeningRepository) MarkTaskRunning(taskID uint, startedAt time.Time) 
 		}))
 }
 
-func (r *HardeningRepository) MarkTaskCompleted(taskID uint, unsignedKey string, unsignedSize int64, unsignedSHA string, signedKey string, signedSize int64, signedSHA string, finishedAt time.Time) error {
+// RecordArtifacts eagerly persists artifact object keys as soon as the
+// upload step succeeds, before the task is marked completed. This means a
+// task that crashes between a successful upload and the final completion
+// write still leaves a record of what was uploaded, so crash recovery can
+// find and clean up the objects instead of leaking them in MinIO forever.
+func (r *HardeningRepository) RecordArtifacts(taskID uint, unsignedKey string, unsignedSize int64, unsignedSHA string, signedKey string, signedSize int64, signedSHA string) error {
 	return requireUpdatedRow(r.db.Model(&model.HardeningTask{}).
-		Where("id = ? AND status = ?", taskID, model.HardeningTaskStatusRunning).
+		Where("id = ?", taskID).
 		Updates(map[string]interface{}{
-			"status":                 model.HardeningTaskStatusCompleted,
 			"unsigned_object_key":    unsignedKey,
 			"unsigned_file_size":     unsignedSize,
 			"unsigned_sha256":        unsignedSHA,
 			"signed_test_object_key": signedKey,
 			"signed_test_file_size":  signedSize,
 			"signed_test_sha256":     signedSHA,
-			"finished_at":            finishedAt,
-			"error_summary":          "",
 		}))
 }
 
@@ -165,26 +161,41 @@ func (r *HardeningRepository) CompleteTaskForApp(taskID uint, unsignedKey string
 	}, model.AppStatusCompleted)
 }
 
-func (r *HardeningRepository) MarkTaskFailed(taskID uint, summary string, finishedAt time.Time) error {
-	return requireUpdatedRow(r.db.Model(&model.HardeningTask{}).
-		Where("id = ? AND status = ?", taskID, model.HardeningTaskStatusRunning).
-		Updates(map[string]interface{}{
-			"status":        model.HardeningTaskStatusFailed,
-			"error_summary": summary,
-			"finished_at":   finishedAt,
-		}))
+// failedTaskArtifactFields clears every artifact reference a task might carry.
+// A failed task must never claim to have a downloadable artifact: on the
+// "completion persistence failed" path the just-uploaded objects get rolled
+// back by the worker, and on crash recovery any eagerly-recorded object keys
+// (see RecordArtifacts) point at objects the worker also cleans up — either
+// way, the DB row and object storage must agree that nothing is left.
+var failedTaskArtifactFields = map[string]interface{}{
+	"unsigned_object_key":    "",
+	"unsigned_file_size":     0,
+	"unsigned_sha256":        "",
+	"signed_test_object_key": "",
+	"signed_test_file_size":  0,
+	"signed_test_sha256":     "",
 }
 
 func (r *HardeningRepository) FailTaskForApp(taskID uint, summary string, finishedAt time.Time) error {
-	return r.transitionTaskForApp(taskID, model.HardeningTaskStatusRunning, map[string]interface{}{
+	updates := map[string]interface{}{
 		"status":        model.HardeningTaskStatusFailed,
 		"error_summary": summary,
 		"finished_at":   finishedAt,
-	}, model.AppStatusFailed)
+	}
+	for k, v := range failedTaskArtifactFields {
+		updates[k] = v
+	}
+	return r.transitionTaskForApp(taskID, model.HardeningTaskStatusRunning, updates, model.AppStatusFailed)
 }
 
-func (r *HardeningRepository) RecoverRunningTasks(summary string) ([]uint, error) {
-	var recoveredIDs []uint
+// RecoverRunningTasks marks any task left in "running" (e.g. after a crash)
+// as failed, and returns the full task rows as they were immediately before
+// that transition — including any artifact object keys eagerly recorded via
+// RecordArtifacts — so the caller (the worker, which has MinIO access) can
+// clean up orphaned objects for tasks that crashed after uploading but
+// before completing.
+func (r *HardeningRepository) RecoverRunningTasks(summary string) ([]model.HardeningTask, error) {
+	var recovered []model.HardeningTask
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		var tasks []model.HardeningTask
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -193,35 +204,44 @@ func (r *HardeningRepository) RecoverRunningTasks(summary string) ([]uint, error
 			return err
 		}
 		if len(tasks) == 0 {
-			recoveredIDs = []uint{}
+			recovered = []model.HardeningTask{}
 			return nil
 		}
 
 		now := time.Now()
-		recoveredIDs = make([]uint, 0, len(tasks))
+		ids := make([]uint, 0, len(tasks))
 		for _, task := range tasks {
-			recoveredIDs = append(recoveredIDs, task.ID)
-			if err := transitionTaskForAppTx(tx, task.ID, task.AppID, model.HardeningTaskStatusRunning, map[string]interface{}{
+			ids = append(ids, task.ID)
+			taskUpdates := map[string]interface{}{
 				"status":        model.HardeningTaskStatusFailed,
 				"error_summary": summary,
 				"finished_at":   now,
-			}, model.AppStatusFailed); err != nil {
+			}
+			for k, v := range failedTaskArtifactFields {
+				taskUpdates[k] = v
+			}
+			if err := transitionTaskForAppTx(tx, task.ID, task.AppID, model.HardeningTaskStatusRunning, taskUpdates, model.AppStatusFailed); err != nil {
 				return err
 			}
 		}
 
-		return tx.Model(&model.HardeningStep{}).
-			Where("task_id IN ? AND status = ?", recoveredIDs, model.HardeningStepStatusRunning).
+		if err := tx.Model(&model.HardeningStep{}).
+			Where("task_id IN ? AND status = ?", ids, model.HardeningStepStatusRunning).
 			Updates(map[string]interface{}{
 				"status":        model.HardeningStepStatusFailed,
 				"error_message": summary,
 				"finished_at":   now,
-			}).Error
+			}).Error; err != nil {
+			return err
+		}
+
+		recovered = tasks
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return recoveredIDs, nil
+	return recovered, nil
 }
 
 func (r *HardeningRepository) transitionTaskForApp(taskID uint, expectedStatus model.HardeningTaskStatus, taskUpdates map[string]interface{}, appStatus model.AppStatus) error {
@@ -405,8 +425,11 @@ func (r *HardeningRepository) Logs(taskID uint, filter HardeningLogFilter) ([]mo
 			Where("hardening_steps.step_key = ?", filter.StepKey)
 	}
 
+	// filter.Limit < 0 means "not provided" (see HardeningLogFilter/handler);
+	// an explicit 0 is a real request for zero rows and must be honored,
+	// not silently treated the same as "not provided".
 	limit := filter.Limit
-	if limit < 1 || limit > 500 {
+	if limit < 0 || limit > 500 {
 		limit = 200
 	}
 

@@ -285,8 +285,8 @@ func TestHardeningService_DownloadURLArtifacts(t *testing.T) {
 	if err := repo.MarkTaskRunning(detail.Task.ID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	if err := repo.MarkTaskCompleted(detail.Task.ID, "hardening/unsigned.apk", 10, "abc", "hardening/signed.apk", 11, "def", now); err != nil {
-		t.Fatalf("MarkTaskCompleted() error = %v", err)
+	if err := repo.CompleteTaskForApp(detail.Task.ID, "hardening/unsigned.apk", 10, "abc", "hardening/signed.apk", 11, "def", now); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 
 	unsignedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "")

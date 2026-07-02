@@ -111,7 +111,10 @@ func (h *HardeningHandler) Logs(c *gin.Context) {
 	}
 
 	afterID, _ := strconv.ParseUint(c.DefaultQuery("afterId", "0"), 10, 64)
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
+	// -1 means "not provided" and lets the repository apply its own default;
+	// an explicit limit=0 is a real request for zero rows and must be
+	// distinguishable from "the client didn't pass limit at all".
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "-1"))
 
 	logs, err := h.svc.Logs(id, repository.HardeningLogFilter{
 		StepKey: model.HardeningStepKey(c.Query("stepKey")),

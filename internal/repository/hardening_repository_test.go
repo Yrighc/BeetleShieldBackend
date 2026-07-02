@@ -616,7 +616,7 @@ func TestHardeningRepository_ListLogsAndRecoverRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecoverRunningTasks() error = %v", err)
 	}
-	if len(ids) != 1 || ids[0] != running.ID {
+	if len(ids) != 1 || ids[0].ID != running.ID {
 		t.Fatalf("recovered ids = %+v, want [%d]", ids, running.ID)
 	}
 	recovered, err := repo.FindByID(running.ID)

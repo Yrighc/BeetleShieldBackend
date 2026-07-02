@@ -55,6 +55,7 @@ func setupAppService(t *testing.T) *service.AppService {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	appRepo := repository.NewAppRepository(database)
+	hardeningRepo := repository.NewHardeningRepository(database)
 
 	st, err := storage.NewMinioStorage("localhost:9000", "admin", "yuan801200", "test-bucket", false)
 	if err != nil {
@@ -64,7 +65,7 @@ func setupAppService(t *testing.T) *service.AppService {
 		t.Fatalf("EnsureBucket() error = %v (is `make dev-up` running?)", err)
 	}
 
-	return service.NewAppService(appRepo, st, 10)
+	return service.NewAppService(appRepo, hardeningRepo, st, 10)
 }
 
 func TestAppService_Upload_ManualPackageInfo(t *testing.T) {

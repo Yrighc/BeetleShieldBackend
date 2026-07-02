@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"beetleshield-backend/internal/config"
@@ -14,6 +18,11 @@ import (
 	"beetleshield-backend/internal/service"
 	"beetleshield-backend/internal/worker"
 )
+
+// shutdownTimeout bounds how long graceful shutdown waits for the HTTP
+// server to drain in-flight requests and for the hardening worker to finish
+// its current task before the process exits anyway.
+const shutdownTimeout = 15 * time.Second
 
 func main() {
 	cfg, err := config.Load(".env")
@@ -50,14 +59,14 @@ func main() {
 	userHandler := handler.NewUserHandler(userService)
 
 	appRepo := repository.NewAppRepository(database)
-	appService := service.NewAppService(appRepo, storageClient, cfg.MaxUploadSizeMB)
+	hardeningRepo := repository.NewHardeningRepository(database)
+	appService := service.NewAppService(appRepo, hardeningRepo, storageClient, cfg.MaxUploadSizeMB)
 	appHandler := handler.NewAppHandler(appService)
 
 	strategyRepo := repository.NewStrategyRepository(database)
 	strategyService := service.NewStrategyService(strategyRepo)
 	strategyHandler := handler.NewStrategyHandler(strategyService)
 
-	hardeningRepo := repository.NewHardeningRepository(database)
 	hardeningService := service.NewHardeningService(
 		hardeningRepo,
 		appRepo,
@@ -68,7 +77,6 @@ func main() {
 	hardeningHandler := handler.NewHardeningHandler(hardeningService)
 	hardeningWorker := worker.NewHardeningWorker(
 		hardeningRepo,
-		appRepo,
 		storageClient,
 		worker.DPTRunner{},
 		worker.HardeningWorkerConfig{
@@ -78,7 +86,11 @@ func main() {
 			Timeout:         time.Duration(cfg.DPTTaskTimeoutMinutes) * time.Minute,
 		},
 	)
-	hardeningWorker.Start(context.Background(), 3*time.Second)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	workerDone := hardeningWorker.Start(ctx, 3*time.Second)
 
 	r := router.New(router.Deps{
 		JWTSecret:        cfg.JWTSecret,
@@ -89,7 +101,26 @@ func main() {
 		HardeningHandler: hardeningHandler,
 	})
 
-	if err := r.Run(":" + cfg.ServerPort); err != nil {
-		log.Fatalf("server failed: %v", err)
+	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server failed: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutdown signal received, draining...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http server shutdown error: %v", err)
+	}
+
+	select {
+	case <-workerDone:
+	case <-shutdownCtx.Done():
+		log.Println("hardening worker did not stop before shutdown timeout")
 	}
 }

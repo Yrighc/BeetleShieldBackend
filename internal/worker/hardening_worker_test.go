@@ -165,7 +165,7 @@ func setupWorkerTest(t *testing.T) (*gorm.DB, *HardeningWorker, *repository.Hard
 		writeSigned:   true,
 		lines:         []string{"engine started", "All done."},
 	}
-	w := NewHardeningWorker(repo, appRepo, storage, runner, HardeningWorkerConfig{
+	w := NewHardeningWorker(repo, storage, runner, HardeningWorkerConfig{
 		JarPath:         "/opt/dpt.jar",
 		WorkDir:         t.TempDir(),
 		DefaultVMPRules: "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
@@ -278,8 +278,8 @@ func createWorkerTask(t *testing.T, database *gorm.DB, repo *repository.Hardenin
 		EnableProxyDetect:        true,
 		CreatedBy:                1,
 	}
-	if err := repo.CreateTaskWithSteps(&task); err != nil {
-		t.Fatalf("CreateTaskWithSteps() error = %v", err)
+	if err := repo.CreateTaskWithStepsForApp(&task, model.AppStatusProcessing); err != nil {
+		t.Fatalf("CreateTaskWithStepsForApp() error = %v", err)
 	}
 	if err := database.Model(&model.HardeningTask{}).Where("id = ?", task.ID).Update("created_at", time.Unix(1, 0)).Error; err != nil {
 		t.Fatalf("set created_at: %v", err)
@@ -405,7 +405,7 @@ func TestHardeningWorker_ProcessNextReturnsMarkFailedErrorAfterRunFailure(t *tes
 	}
 }
 
-func TestHardeningWorker_ProcessNextSuccessDoesNotDriftWhenCompletionTransitionFails(t *testing.T) {
+func TestHardeningWorker_ProcessNextRecoversWhenCompletionTransitionFails(t *testing.T) {
 	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
 	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "completion-rollback")
 	updateErr := errors.New("apps status update failed")
@@ -423,19 +423,26 @@ func TestHardeningWorker_ProcessNextSuccessDoesNotDriftWhenCompletionTransitionF
 	if findErr != nil {
 		t.Fatalf("FindByID() error = %v", findErr)
 	}
-	if found.Status != model.HardeningTaskStatusRunning {
-		t.Fatalf("task status = %s, want running after rollback", found.Status)
+	if found.Status != model.HardeningTaskStatusFailed {
+		t.Fatalf("task status = %s, want failed (task must not get stuck in running when completion persistence fails)", found.Status)
+	}
+	if !strings.Contains(found.ErrorSummary, "apps status update failed") {
+		t.Fatalf("error summary = %q, want it to mention the completion failure", found.ErrorSummary)
 	}
 	if found.UnsignedObjectKey != "" || found.SignedTestObjectKey != "" {
-		t.Fatalf("artifact keys should not persist when completion rolls back: %+v", found)
+		t.Fatalf("artifact keys should be cleared once the uploaded artifacts are rolled back: %+v", found)
+	}
+	unsignedObjectKey := artifactObjectKey(found, "unsigned", ".apk")
+	if _, ok := storage.objects[unsignedObjectKey]; ok {
+		t.Fatal("expected uploaded artifact to be rolled back when completion persistence fails")
 	}
 
 	app, appErr := appRepo.FindByID(task.AppID)
 	if appErr != nil {
 		t.Fatalf("FindByID(app) error = %v", appErr)
 	}
-	if app.Status != model.AppStatusProcessing {
-		t.Fatalf("app status = %s, want processing after rollback", app.Status)
+	if app.Status != model.AppStatusFailed {
+		t.Fatalf("app status = %s, want failed", app.Status)
 	}
 }
 
@@ -617,8 +624,8 @@ func TestHardeningWorker_ProcessNextCompletionFailureRollsBackUploadedArtifacts(
 	if appErr != nil {
 		t.Fatalf("FindByID(app) error = %v", appErr)
 	}
-	if found.Status != model.HardeningTaskStatusRunning || app.Status != model.AppStatusProcessing {
-		t.Fatalf("task/app status = %s/%s, want running/processing after rollback", found.Status, app.Status)
+	if found.Status != model.HardeningTaskStatusFailed || app.Status != model.AppStatusFailed {
+		t.Fatalf("task/app status = %s/%s, want failed/failed (must not get stuck in running when completion persistence fails)", found.Status, app.Status)
 	}
 }
 
@@ -701,6 +708,51 @@ func TestHardeningWorker_RecoverRunningMarksTasksAndAppsFailed(t *testing.T) {
 	}
 	if app.Status != model.AppStatusFailed {
 		t.Fatalf("app status = %s", app.Status)
+	}
+}
+
+func TestHardeningWorker_RecoverRunningCleansUpOrphanedArtifacts(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "recover-artifacts")
+	if err := repo.MarkTaskRunning(task.ID, time.Now()); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+
+	// Simulate a crash that happened after the upload step succeeded (and
+	// eagerly recorded the artifact keys via RecordArtifacts) but before the
+	// task was marked completed: the objects genuinely exist in storage, and
+	// the DB row still points at them.
+	unsignedKey := artifactObjectKey(&task, "unsigned", ".apk")
+	signedKey := artifactObjectKey(&task, "signed_test", ".apk")
+	storage.objects[unsignedKey] = []byte("unsigned")
+	storage.objects[signedKey] = []byte("signed")
+	if err := repo.RecordArtifacts(task.ID, unsignedKey, 8, "unsigned-sha", signedKey, 6, "signed-sha"); err != nil {
+		t.Fatalf("RecordArtifacts() error = %v", err)
+	}
+
+	if err := w.RecoverRunning(context.Background()); err != nil {
+		t.Fatalf("RecoverRunning() error = %v", err)
+	}
+
+	found, err := repo.FindByID(task.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if found.Status != model.HardeningTaskStatusFailed {
+		t.Fatalf("task status = %s, want failed", found.Status)
+	}
+	if found.UnsignedObjectKey != "" || found.SignedTestObjectKey != "" {
+		t.Fatalf("artifact keys should be cleared after recovery: %+v", found)
+	}
+
+	if _, ok := storage.objects[unsignedKey]; ok {
+		t.Fatal("expected orphaned unsigned artifact to be cleaned up on recovery")
+	}
+	if _, ok := storage.objects[signedKey]; ok {
+		t.Fatal("expected orphaned signed artifact to be cleaned up on recovery")
+	}
+	if len(storage.deleteCalls) != 2 {
+		t.Fatalf("delete calls = %+v, want 2 deletions", storage.deleteCalls)
 	}
 }
 

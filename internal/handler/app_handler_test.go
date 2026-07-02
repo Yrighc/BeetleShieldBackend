@@ -77,7 +77,8 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, string, func()) {
 		t.Fatalf("EnsureBucket() error = %v", err)
 	}
 	appRepo := repository.NewAppRepository(database)
-	appService := service.NewAppService(appRepo, st, cfg.MaxUploadSizeMB)
+	hardeningRepo := repository.NewHardeningRepository(database)
+	appService := service.NewAppService(appRepo, hardeningRepo, st, cfg.MaxUploadSizeMB)
 	appHandler := handler.NewAppHandler(appService)
 
 	r := router.New(router.Deps{

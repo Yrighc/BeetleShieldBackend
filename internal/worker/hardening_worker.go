@@ -39,20 +39,7 @@ type HardeningWorker struct {
 	cfg     HardeningWorkerConfig
 }
 
-type terminalPersistenceError struct {
-	err error
-}
-
-func (e terminalPersistenceError) Error() string {
-	return e.err.Error()
-}
-
-func (e terminalPersistenceError) Unwrap() error {
-	return e.err
-}
-
-func NewHardeningWorker(repo *repository.HardeningRepository, appRepo *repository.AppRepository, storage ObjectStorage, runner EngineRunner, cfg HardeningWorkerConfig) *HardeningWorker {
-	_ = appRepo
+func NewHardeningWorker(repo *repository.HardeningRepository, storage ObjectStorage, runner EngineRunner, cfg HardeningWorkerConfig) *HardeningWorker {
 	return &HardeningWorker{
 		repo:    repo,
 		storage: storage,
@@ -65,12 +52,39 @@ func (w *HardeningWorker) RecoverRunning(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ids, err := w.repo.RecoverRunningTasks("服务重启导致任务中断")
+	tasks, err := w.repo.RecoverRunningTasks("服务重启导致任务中断")
 	if err != nil {
 		return err
 	}
-	_ = ids
+	w.cleanupRecoveredArtifacts(tasks)
 	return nil
+}
+
+// cleanupRecoveredArtifacts best-effort deletes any artifact objects a
+// crashed task had already uploaded (see RecordArtifacts) before the process
+// died. Deletion failures are logged, not returned: the DB rows have already
+// been marked failed with their artifact fields cleared, so a leaked object
+// left in MinIO after a log warning is preferable to blocking the whole
+// recovery pass on an object store that might be unavailable right after a
+// restart.
+func (w *HardeningWorker) cleanupRecoveredArtifacts(tasks []model.HardeningTask) {
+	if len(tasks) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, task := range tasks {
+		for _, key := range []string{task.UnsignedObjectKey, task.SignedTestObjectKey} {
+			if key == "" {
+				continue
+			}
+			if err := w.storage.DeleteObject(ctx, key); err != nil {
+				log.Printf("hardening worker: failed to clean up orphaned artifact %q for task %d: %v", key, task.ID, err)
+			}
+		}
+	}
 }
 
 func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
@@ -87,10 +101,13 @@ func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 	}
 
 	if err := w.runTask(ctx, task); err != nil {
-		var terminalErr terminalPersistenceError
-		if errors.As(err, &terminalErr) {
-			return true, err
-		}
+		// Always mark the task failed, even if the failure happened while
+		// persisting a successful completion (CompleteTaskForApp): GORM wraps
+		// that write in a transaction, so an error there means it rolled back
+		// and the task is genuinely still "running" — not in some ambiguous
+		// state. Leaving it "running" here would make it invisible to both
+		// NextQueuedTask (only selects "queued") and the once-at-startup
+		// crash recovery pass, stuck until a manual restart.
 		now := time.Now()
 		markErr := w.repo.FailTaskForApp(task.ID, err.Error(), now)
 		return true, errors.Join(err, markErr)
@@ -99,8 +116,15 @@ func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (w *HardeningWorker) Start(ctx context.Context, interval time.Duration) {
+// Start launches the worker loop in a goroutine and returns a channel that is
+// closed once the loop has actually stopped, so callers doing graceful
+// shutdown can wait for in-flight work to finish instead of exiting the
+// process out from under it.
+func (w *HardeningWorker) Start(ctx context.Context, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
+
 		if err := w.RecoverRunning(ctx); err != nil && ctx.Err() == nil {
 			w.reportAsyncError(err)
 		}
@@ -126,6 +150,7 @@ func (w *HardeningWorker) Start(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+	return done
 }
 
 func (w *HardeningWorker) reportAsyncError(err error) {
@@ -253,14 +278,22 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 	if err := w.runStep(task.ID, model.HardeningStepUploadArtifacts, func(step *model.HardeningStep) error {
 		keys, uploadErr := w.uploadArtifacts(taskCtx, unsigned, signed)
 		uploadedKeys = keys
-		return uploadErr
+		if uploadErr != nil {
+			return uploadErr
+		}
+		// Record the uploaded object keys as soon as they exist, before the
+		// task is marked completed. If the process crashes between here and
+		// CompleteTaskForApp below, the DB row still points at real objects
+		// in MinIO, so the crash-recovery pass (RecoverRunning) can find and
+		// clean them up instead of leaking them forever.
+		return w.repo.RecordArtifacts(task.ID, unsigned.ObjectKey, unsigned.Size, unsigned.SHA256, signed.ObjectKey, signed.Size, signed.SHA256)
 	}); err != nil {
 		return err
 	}
 
 	now := time.Now()
 	if err := w.repo.CompleteTaskForApp(task.ID, unsigned.ObjectKey, unsigned.Size, unsigned.SHA256, signed.ObjectKey, signed.Size, signed.SHA256, now); err != nil {
-		return terminalPersistenceError{err: err}
+		return fmt.Errorf("persist task completion: %w", err)
 	}
 
 	return nil
@@ -295,7 +328,21 @@ func (w *HardeningWorker) log(taskID uint, stepID *uint, level model.HardeningLo
 	})
 }
 
-func (w *HardeningWorker) uploadArtifact(ctx context.Context, artifact service.ArtifactInfo) error {
+func (w *HardeningWorker) uploadArtifacts(ctx context.Context, artifacts ...service.ArtifactInfo) ([]string, error) {
+	uploadedKeys := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Path == "" {
+			continue
+		}
+		if err := w.uploadOne(ctx, artifact); err != nil {
+			return uploadedKeys, err
+		}
+		uploadedKeys = append(uploadedKeys, artifact.ObjectKey)
+	}
+	return uploadedKeys, nil
+}
+
+func (w *HardeningWorker) uploadOne(ctx context.Context, artifact service.ArtifactInfo) error {
 	file, err := os.Open(artifact.Path)
 	if err != nil {
 		return err
@@ -303,20 +350,6 @@ func (w *HardeningWorker) uploadArtifact(ctx context.Context, artifact service.A
 	defer file.Close()
 
 	return w.storage.PutObject(ctx, artifact.ObjectKey, file, artifact.Size, "application/octet-stream")
-}
-
-func (w *HardeningWorker) uploadArtifacts(ctx context.Context, artifacts ...service.ArtifactInfo) ([]string, error) {
-	uploadedKeys := make([]string, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		if artifact.Path == "" {
-			continue
-		}
-		if err := w.uploadArtifact(ctx, artifact); err != nil {
-			return uploadedKeys, err
-		}
-		uploadedKeys = append(uploadedKeys, artifact.ObjectKey)
-	}
-	return uploadedKeys, nil
 }
 
 func (w *HardeningWorker) rollbackArtifacts(objectKeys []string) error {
@@ -331,5 +364,20 @@ func (w *HardeningWorker) rollbackArtifacts(objectKeys []string) error {
 }
 
 func artifactObjectKey(task *model.HardeningTask, kind string, ext string) string {
-	return fmt.Sprintf("%s/hardening/%s/%s%s", task.App.PackageName, task.TaskNo, kind, ext)
+	return fmt.Sprintf("%s/hardening/%s/%s%s", sanitizeObjectKeySegment(task.App.PackageName), task.TaskNo, kind, ext)
+}
+
+// sanitizeObjectKeySegment strips characters that would let a package name
+// escape its intended position in a MinIO object key (e.g. "../" path
+// traversal, or a leading "/" turning a relative key absolute). Package
+// names are attacker-controlled: they come from an uploaded APK's manifest
+// or a manual form field, not from a trusted source.
+func sanitizeObjectKeySegment(s string) string {
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, "..", "_")
+	if s == "" {
+		return "_"
+	}
+	return s
 }
