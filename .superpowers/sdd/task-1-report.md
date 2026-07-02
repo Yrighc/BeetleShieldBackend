@@ -88,3 +88,34 @@ go test ./internal/config ./internal/db ./internal/pkg/storage -v
 - PASS: `go test ./internal/config ./internal/db ./internal/pkg/storage -v`
 - Added a regression test proving hardening cleanup must remove the task row after deleting logs and steps.
 - Consolidated hardening cleanup for `TASK-MIGRATION-001` into one ordered helper that deletes `hardening_logs`, then `hardening_steps`, then `hardening_tasks`, with no separate task-row defer left behind to race the subquery cleanup.
+
+## Fix 3: Review Findings on 2026-07-02
+
+### Files Changed
+
+- `internal/db/db_test.go`
+- `internal/pkg/storage/minio_test.go`
+- `.superpowers/sdd/task-1-report.md`
+
+### Tests Run
+
+```bash
+go test ./internal/db -run 'TestMigrate_HardeningTables|TestDeleteHardeningRowsByTaskNo_RemovesTaskHierarchy' -count=2 -v
+go test ./internal/pkg/storage -run TestMinioStorage_GetObjectToFile -count=2 -v
+go test ./internal/config ./internal/db ./internal/pkg/storage -v
+```
+
+### Results
+
+- PASS: `go test ./internal/db -run 'TestMigrate_HardeningTables|TestDeleteHardeningRowsByTaskNo_RemovesTaskHierarchy' -count=2 -v`
+  - `TestMigrate_HardeningTables` passed twice
+  - `TestDeleteHardeningRowsByTaskNo_RemovesTaskHierarchy` passed twice
+  - Package result: `ok   beetleshield-backend/internal/db	0.747s`
+- PASS: `go test ./internal/pkg/storage -run TestMinioStorage_GetObjectToFile -count=2 -v`
+  - `TestMinioStorage_GetObjectToFile` passed twice
+  - Package result: `ok   beetleshield-backend/internal/pkg/storage	0.351s`
+- PASS: `go test ./internal/config ./internal/db ./internal/pkg/storage -v`
+  - `ok   beetleshield-backend/internal/config	(cached)`
+  - `ok   beetleshield-backend/internal/db	(cached)`
+  - `ok   beetleshield-backend/internal/pkg/storage	(cached)`
+- Replaced shared Task 1 fixture identifiers with per-run values in the hardening DB tests and MinIO object download test, while preserving the same assertions and cleanup coverage for logs, steps, task, app, and object removal.

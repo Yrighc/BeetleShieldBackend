@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,7 @@ func TestPutAndDeleteObject(t *testing.T) {
 func TestMinioStorage_GetObjectToFile(t *testing.T) {
 	st := newTestStorage(t)
 	ctx := context.Background()
-	objectKey := "hardening-storage-test/source.txt"
+	objectKey := fmt.Sprintf("hardening-storage-test/%d-source.txt", time.Now().UnixNano())
 	body := strings.NewReader("download me")
 	if err := st.PutObject(ctx, objectKey, body, int64(body.Len()), "text/plain"); err != nil {
 		t.Fatalf("PutObject() error = %v", err)

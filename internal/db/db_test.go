@@ -1,7 +1,9 @@
 package db
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/model"
@@ -17,6 +19,11 @@ func testConfig() *config.Config {
 		DBName:     "beetleshield",
 		DBSSLMode:  "disable",
 	}
+}
+
+func uniqueHardeningFixture(prefix string) (taskNo string, packageName string) {
+	suffix := time.Now().UnixNano()
+	return fmt.Sprintf("%s-%d", prefix, suffix), fmt.Sprintf("com.hardening.%s.%d", prefix, suffix)
 }
 
 func TestMigrateAndSeedAdmin(t *testing.T) {
@@ -127,17 +134,18 @@ func TestMigrate_HardeningTables(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 
-	const taskNo = "TASK-MIGRATION-001"
+	taskNo, packageName := uniqueHardeningFixture("migration")
 	cleanupHardeningRows := func() {
 		if err := deleteHardeningRowsByTaskNo(database, taskNo); err != nil {
 			t.Fatalf("cleanup hardening rows: %v", err)
 		}
+		database.Unscoped().Where("package_name = ?", packageName).Delete(&model.App{})
 	}
 	cleanupHardeningRows()
 
 	app := model.App{
 		Name:        "Hardening Migration Test",
-		PackageName: "com.hardening.migration.test",
+		PackageName: packageName,
 		Version:     "1.0.0",
 		Tag:         model.AppTagTool,
 		Status:      model.AppStatusUnprotected,
@@ -146,13 +154,9 @@ func TestMigrate_HardeningTables(t *testing.T) {
 		SHA256:      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		UploadedBy:  1,
 	}
-	database.Unscoped().Where("package_name = ?", app.PackageName).Delete(&model.App{})
 	if err := database.Create(&app).Error; err != nil {
 		t.Fatalf("create app: %v", err)
 	}
-	t.Cleanup(func() {
-		database.Unscoped().Where("package_name = ?", app.PackageName).Delete(&model.App{})
-	})
 	t.Cleanup(cleanupHardeningRows)
 
 	task := model.HardeningTask{
@@ -201,10 +205,10 @@ func TestDeleteHardeningRowsByTaskNo_RemovesTaskHierarchy(t *testing.T) {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 
-	const taskNo = "TASK-MIGRATION-CLEANUP-001"
+	taskNo, packageName := uniqueHardeningFixture("cleanup")
 	app := model.App{
 		Name:        "Hardening Cleanup Test",
-		PackageName: "com.hardening.migration.cleanup.test",
+		PackageName: packageName,
 		Version:     "1.0.0",
 		Tag:         model.AppTagTool,
 		Status:      model.AppStatusUnprotected,
@@ -214,11 +218,9 @@ func TestDeleteHardeningRowsByTaskNo_RemovesTaskHierarchy(t *testing.T) {
 		UploadedBy:  1,
 	}
 
-	database.Unscoped().Where("task_no = ?", taskNo).Delete(&model.HardeningTask{})
-	database.Unscoped().Where("package_name = ?", app.PackageName).Delete(&model.App{})
 	t.Cleanup(func() {
 		_ = deleteHardeningRowsByTaskNo(database, taskNo)
-		database.Unscoped().Where("package_name = ?", app.PackageName).Delete(&model.App{})
+		database.Unscoped().Where("package_name = ?", packageName).Delete(&model.App{})
 	})
 
 	if err := database.Create(&app).Error; err != nil {
