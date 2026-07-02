@@ -170,6 +170,27 @@ func TestUserRoutes_RequireAdminRole(t *testing.T) {
 	}
 }
 
+func TestUserCreate_WeakPasswordRejected(t *testing.T) {
+	srv, adminToken, _, cleanup := setupUserRouter(t)
+	defer cleanup()
+
+	body, _ := json.Marshal(map[string]string{
+		"name": "弱密码用户", "email": "userhandler-created-weakpw@beetleshield.com",
+		"password": "short", "role": "developer",
+	})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/users", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
 func TestUserCreate_DuplicateEmailConflict(t *testing.T) {
 	srv, adminToken, _, cleanup := setupUserRouter(t)
 	defer cleanup()

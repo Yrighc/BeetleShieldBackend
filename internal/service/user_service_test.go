@@ -102,3 +102,43 @@ func TestUserService_UpdateStatus(t *testing.T) {
 		t.Errorf("err = %v, want %v", err, service.ErrCannotDisableSelf)
 	}
 }
+
+func TestUserService_UpdateStatus_AdminDisablesAnotherAdmin(t *testing.T) {
+	repo := setupTestUserRepo(t)
+	svc := service.NewUserService(repo)
+
+	repo.DeleteByEmail("usersvc-admin-a@beetleshield.com")
+	repo.DeleteByEmail("usersvc-admin-b@beetleshield.com")
+	t.Cleanup(func() {
+		repo.DeleteByEmail("usersvc-admin-a@beetleshield.com")
+		repo.DeleteByEmail("usersvc-admin-b@beetleshield.com")
+	})
+
+	adminA, err := svc.Create(service.CreateUserInput{
+		Name: "管理员甲", Email: "usersvc-admin-a@beetleshield.com", Password: "Password123!",
+		Role: model.RoleAdmin,
+	})
+	if err != nil {
+		t.Fatalf("Create() adminA error = %v", err)
+	}
+
+	adminB, err := svc.Create(service.CreateUserInput{
+		Name: "管理员乙", Email: "usersvc-admin-b@beetleshield.com", Password: "Password123!",
+		Role: model.RoleAdmin,
+	})
+	if err != nil {
+		t.Fatalf("Create() adminB error = %v", err)
+	}
+
+	if err := svc.UpdateStatus(adminB.ID, model.UserStatusDisabled, adminA.ID); err != nil {
+		t.Fatalf("UpdateStatus() error = %v", err)
+	}
+
+	disabled, err := repo.FindByID(adminB.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if disabled.Status != model.UserStatusDisabled {
+		t.Errorf("Status = %q, want %q", disabled.Status, model.UserStatusDisabled)
+	}
+}
