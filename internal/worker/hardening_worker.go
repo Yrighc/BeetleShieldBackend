@@ -95,6 +95,9 @@ func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 		}
 		return false, err
 	}
+	if task == nil {
+		return false, nil
+	}
 
 	if err := w.repo.MarkTaskRunning(task.ID, time.Now()); err != nil {
 		return false, err
