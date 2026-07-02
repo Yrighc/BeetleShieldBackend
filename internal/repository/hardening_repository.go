@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"beetleshield-backend/internal/model"
 )
@@ -26,6 +27,8 @@ type HardeningLogFilter struct {
 type HardeningRepository struct {
 	db *gorm.DB
 }
+
+var ErrActiveHardeningTaskExists = errors.New("active hardening task already exists")
 
 func NewHardeningRepository(db *gorm.DB) *HardeningRepository {
 	return &HardeningRepository{db: db}
@@ -52,18 +55,52 @@ func requireUpdatedRow(result *gorm.DB) error {
 
 func (r *HardeningRepository) CreateTaskWithSteps(task *model.HardeningTask) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(task).Error; err != nil {
+		return createTaskWithDefaultSteps(tx, task)
+	})
+}
+
+func (r *HardeningRepository) CreateTaskWithStepsForApp(task *model.HardeningTask, appStatus model.AppStatus) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var app model.App
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&app, task.AppID).Error; err != nil {
 			return err
 		}
-		for _, template := range defaultHardeningSteps {
-			step := template
-			step.TaskID = task.ID
-			if err := tx.Create(&step).Error; err != nil {
-				return err
-			}
+
+		var count int64
+		if err := tx.Model(&model.HardeningTask{}).
+			Where("app_id = ? AND status IN ?", task.AppID, []model.HardeningTaskStatus{
+				model.HardeningTaskStatusQueued,
+				model.HardeningTaskStatusRunning,
+			}).
+			Count(&count).Error; err != nil {
+			return err
 		}
-		return nil
+		if count > 0 {
+			return ErrActiveHardeningTaskExists
+		}
+
+		if err := createTaskWithDefaultSteps(tx, task); err != nil {
+			return err
+		}
+
+		return requireUpdatedRow(tx.Model(&model.App{}).
+			Where("id = ?", task.AppID).
+			Update("status", appStatus))
 	})
+}
+
+func createTaskWithDefaultSteps(tx *gorm.DB, task *model.HardeningTask) error {
+	if err := tx.Create(task).Error; err != nil {
+		return err
+	}
+	for _, template := range defaultHardeningSteps {
+		step := template
+		step.TaskID = task.ID
+		if err := tx.Create(&step).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *HardeningRepository) HasActiveTaskForApp(appID uint) (bool, error) {

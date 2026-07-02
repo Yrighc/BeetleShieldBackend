@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,6 +99,84 @@ func TestHardeningRepository_CreateTaskWithStepsAndActiveCheck(t *testing.T) {
 	}
 	if !active {
 		t.Fatal("expected active task")
+	}
+}
+
+func TestHardeningRepository_CreateTaskWithStepsForAppAtomic(t *testing.T) {
+	repo, appRepo, _ := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, "atomic")
+	task := newRepoTask("TASK-REPO-ATOMIC", app.ID, model.HardeningTaskStatusQueued)
+
+	if err := repo.CreateTaskWithStepsForApp(&task, model.AppStatusProcessing); err != nil {
+		t.Fatalf("CreateTaskWithStepsForApp() error = %v", err)
+	}
+
+	foundApp, err := appRepo.FindByID(app.ID)
+	if err != nil {
+		t.Fatalf("FindByID() app error = %v", err)
+	}
+	if foundApp.Status != model.AppStatusProcessing {
+		t.Fatalf("app status = %s, want processing", foundApp.Status)
+	}
+
+	steps, err := repo.Steps(task.ID)
+	if err != nil {
+		t.Fatalf("Steps() error = %v", err)
+	}
+	if len(steps) != len(defaultHardeningSteps) {
+		t.Fatalf("len(steps) = %d, want %d", len(steps), len(defaultHardeningSteps))
+	}
+
+	second := newRepoTask("TASK-REPO-ATOMIC-DUP", app.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithStepsForApp(&second, model.AppStatusProcessing); !errors.Is(err, ErrActiveHardeningTaskExists) {
+		t.Fatalf("duplicate CreateTaskWithStepsForApp() err = %v, want %v", err, ErrActiveHardeningTaskExists)
+	}
+}
+
+func TestHardeningRepository_CreateTaskWithStepsForAppConcurrent(t *testing.T) {
+	repo, appRepo, _ := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, "atomic-concurrent")
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			task := newRepoTask(fmt.Sprintf("TASK-REPO-ATOMIC-CONCURRENT-%d", idx), app.ID, model.HardeningTaskStatusQueued)
+			<-start
+			errs <- repo.CreateTaskWithStepsForApp(&task, model.AppStatusProcessing)
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	var successCount int
+	var activeErrCount int
+	for err := range errs {
+		switch {
+		case err == nil:
+			successCount++
+		case errors.Is(err, ErrActiveHardeningTaskExists):
+			activeErrCount++
+		default:
+			t.Fatalf("CreateTaskWithStepsForApp() concurrent err = %v", err)
+		}
+	}
+	if successCount != 1 || activeErrCount != 1 {
+		t.Fatalf("success=%d activeErr=%d, want 1/1", successCount, activeErrCount)
+	}
+
+	history, err := repo.RecentByApp(app.ID, 10)
+	if err != nil {
+		t.Fatalf("RecentByApp() error = %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("len(history) = %d, want 1", len(history))
 	}
 }
 

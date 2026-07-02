@@ -2,7 +2,9 @@ package service_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,10 +13,15 @@ import (
 	"beetleshield-backend/internal/model"
 	"beetleshield-backend/internal/repository"
 	"beetleshield-backend/internal/service"
+	"gorm.io/gorm"
 )
 
 type fakeHardeningURLStorage struct {
 	urls map[string]string
+}
+
+type hardeningServiceTestScope struct {
+	runID string
 }
 
 func (f fakeHardeningURLStorage) PresignedDownloadURL(ctx context.Context, objectKey string, expiry time.Duration) (string, error) {
@@ -24,8 +31,58 @@ func (f fakeHardeningURLStorage) PresignedDownloadURL(ctx context.Context, objec
 	return f.urls[objectKey], nil
 }
 
-func setupHardeningServiceTest(t *testing.T) (*service.HardeningService, *repository.AppRepository, *repository.HardeningRepository) {
+func newHardeningServiceTestScope() hardeningServiceTestScope {
+	return hardeningServiceTestScope{
+		runID: fmt.Sprintf("svc-%d", time.Now().UnixNano()),
+	}
+}
+
+func (s hardeningServiceTestScope) packageNamePrefix() string {
+	return "com.hardening.service." + s.runID
+}
+
+func (s hardeningServiceTestScope) packageName(suffix string) string {
+	return s.packageNamePrefix() + "." + suffix
+}
+
+func (s hardeningServiceTestScope) objectKey(suffix string) string {
+	return "service/" + s.runID + "/" + suffix + "/app.apk"
+}
+
+func cleanupHardeningServiceTestData(t *testing.T, database *gorm.DB, scope hardeningServiceTestScope) {
 	t.Helper()
+
+	database.Exec(`
+		DELETE FROM hardening_logs
+		WHERE task_id IN (
+			SELECT hardening_tasks.id
+			FROM hardening_tasks
+			JOIN apps ON apps.id = hardening_tasks.app_id
+			WHERE apps.package_name LIKE ?
+		)
+	`, scope.packageNamePrefix()+".%")
+	database.Exec(`
+		DELETE FROM hardening_steps
+		WHERE task_id IN (
+			SELECT hardening_tasks.id
+			FROM hardening_tasks
+			JOIN apps ON apps.id = hardening_tasks.app_id
+			WHERE apps.package_name LIKE ?
+		)
+	`, scope.packageNamePrefix()+".%")
+	database.Exec(`
+		DELETE FROM hardening_tasks
+		WHERE app_id IN (
+			SELECT id FROM apps WHERE package_name LIKE ?
+		)
+	`, scope.packageNamePrefix()+".%")
+	database.Unscoped().Where("package_name LIKE ?", scope.packageNamePrefix()+".%").Delete(&model.App{})
+	database.Unscoped().Where("updated_by = ?", uint(515151)).Delete(&model.Strategy{})
+}
+
+func setupHardeningServiceTest(t *testing.T) (*service.HardeningService, *repository.AppRepository, *repository.HardeningRepository, hardeningServiceTestScope) {
+	t.Helper()
+	scope := newHardeningServiceTestScope()
 
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
@@ -40,17 +97,10 @@ func setupHardeningServiceTest(t *testing.T) (*service.HardeningService, *reposi
 		t.Fatalf("Migrate() error = %v", err)
 	}
 
-	database.Exec("DELETE FROM hardening_logs WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-%')")
-	database.Exec("DELETE FROM hardening_steps WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-%')")
-	database.Exec("DELETE FROM hardening_tasks WHERE app_id IN (SELECT id FROM apps WHERE package_name LIKE 'com.hardening.service.%')")
-	database.Unscoped().Where("package_name LIKE ?", "com.hardening.service.%").Delete(&model.App{})
+	cleanupHardeningServiceTestData(t, database, scope)
 
 	t.Cleanup(func() {
-		database.Exec("DELETE FROM hardening_logs WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-%')")
-		database.Exec("DELETE FROM hardening_steps WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-%')")
-		database.Exec("DELETE FROM hardening_tasks WHERE app_id IN (SELECT id FROM apps WHERE package_name LIKE 'com.hardening.service.%')")
-		database.Unscoped().Where("package_name LIKE ?", "com.hardening.service.%").Delete(&model.App{})
-		database.Unscoped().Where("updated_by = ?", uint(515151)).Delete(&model.Strategy{})
+		cleanupHardeningServiceTestData(t, database, scope)
 	})
 
 	appRepo := repository.NewAppRepository(database)
@@ -64,19 +114,19 @@ func setupHardeningServiceTest(t *testing.T) (*service.HardeningService, *reposi
 		fakeHardeningURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
 	)
-	return svc, appRepo, hardeningRepo
+	return svc, appRepo, hardeningRepo, scope
 }
 
-func createHardeningServiceApp(t *testing.T, appRepo *repository.AppRepository, suffix string) model.App {
+func createHardeningServiceApp(t *testing.T, appRepo *repository.AppRepository, scope hardeningServiceTestScope, suffix string) model.App {
 	t.Helper()
 
 	app := model.App{
 		Name:        "Service App " + suffix,
-		PackageName: "com.hardening.service." + suffix,
+		PackageName: scope.packageName(suffix),
 		Version:     "1.0.0",
 		Tag:         model.AppTagTool,
 		Status:      model.AppStatusUnprotected,
-		ObjectKey:   "service/" + suffix + "/app.apk",
+		ObjectKey:   scope.objectKey(suffix),
 		MD5:         "d41d8cd98f00b204e9800998ecf8427e",
 		SHA256:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		UploadedBy:  1,
@@ -88,8 +138,8 @@ func createHardeningServiceApp(t *testing.T, appRepo *repository.AppRepository, 
 }
 
 func TestHardeningService_CreateDefaultsAndSetsAppProcessing(t *testing.T) {
-	svc, appRepo, _ := setupHardeningServiceTest(t)
-	app := createHardeningServiceApp(t, appRepo, "create")
+	svc, appRepo, _, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "create")
 
 	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{
 		AppID:     app.ID,
@@ -121,8 +171,8 @@ func TestHardeningService_CreateDefaultsAndSetsAppProcessing(t *testing.T) {
 }
 
 func TestHardeningService_CreateRejectsActiveTask(t *testing.T) {
-	svc, appRepo, _ := setupHardeningServiceTest(t)
-	app := createHardeningServiceApp(t, appRepo, "active")
+	svc, appRepo, _, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "active")
 
 	_, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: 42})
 	if err != nil {
@@ -136,8 +186,8 @@ func TestHardeningService_CreateRejectsActiveTask(t *testing.T) {
 }
 
 func TestHardeningService_CreateUsesCustomSnapshotAndRules(t *testing.T) {
-	svc, appRepo, _ := setupHardeningServiceTest(t)
-	app := createHardeningServiceApp(t, appRepo, "custom")
+	svc, appRepo, _, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "custom")
 	strategy := model.Strategy{DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, RootDetect: true}
 
 	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{
@@ -167,8 +217,8 @@ func TestHardeningService_CreateUsesCustomSnapshotAndRules(t *testing.T) {
 }
 
 func TestHardeningService_GetLogsAndHistory(t *testing.T) {
-	svc, appRepo, repo := setupHardeningServiceTest(t)
-	app := createHardeningServiceApp(t, appRepo, "read")
+	svc, appRepo, repo, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "read")
 
 	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: 99})
 	if err != nil {
@@ -223,8 +273,8 @@ func TestHardeningService_GetLogsAndHistory(t *testing.T) {
 }
 
 func TestHardeningService_DownloadURLArtifacts(t *testing.T) {
-	svc, appRepo, repo := setupHardeningServiceTest(t)
-	app := createHardeningServiceApp(t, appRepo, "download")
+	svc, appRepo, repo, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "download")
 
 	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: 1})
 	if err != nil {
@@ -257,8 +307,8 @@ func TestHardeningService_DownloadURLArtifacts(t *testing.T) {
 }
 
 func TestHardeningService_DownloadURLErrors(t *testing.T) {
-	svc, appRepo, _ := setupHardeningServiceTest(t)
-	app := createHardeningServiceApp(t, appRepo, "download-errors")
+	svc, appRepo, _, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "download-errors")
 
 	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: 1})
 	if err != nil {
@@ -277,7 +327,7 @@ func TestHardeningService_DownloadURLErrors(t *testing.T) {
 }
 
 func TestHardeningService_ErrorMappings(t *testing.T) {
-	svc, _, _ := setupHardeningServiceTest(t)
+	svc, _, _, _ := setupHardeningServiceTest(t)
 
 	if _, err := svc.Get(999999); err != service.ErrHardeningTaskNotFound {
 		t.Fatalf("Get() err = %v, want ErrHardeningTaskNotFound", err)
@@ -293,5 +343,67 @@ func TestHardeningService_ErrorMappings(t *testing.T) {
 	}
 	if _, err := svc.DownloadURL(context.Background(), 999999, "bad"); err != service.ErrHardeningTaskNotFound {
 		t.Fatalf("DownloadURL() missing task with bad artifact err = %v, want ErrHardeningTaskNotFound", err)
+	}
+}
+
+func TestHardeningService_CreateRejectsConcurrentActiveTask(t *testing.T) {
+	svc, appRepo, repo, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "concurrent")
+	input := service.CreateHardeningTaskInput{
+		AppID:            app.ID,
+		CreatedBy:        42,
+		StrategyName:     "concurrent",
+		StrategySnapshot: &model.Strategy{DexLevel: model.DexLevelLow, SoShell: model.SoShellNone},
+		VMPRulesText:     "concurrent.**",
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := svc.Create(context.Background(), input)
+			errs <- err
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	var successCount int
+	var activeErrCount int
+	for err := range errs {
+		switch err {
+		case nil:
+			successCount++
+		case service.ErrHardeningActiveTaskExists:
+			activeErrCount++
+		default:
+			t.Fatalf("Create() concurrent err = %v", err)
+		}
+	}
+	if successCount != 1 || activeErrCount != 1 {
+		t.Fatalf("success=%d activeErr=%d, want 1/1", successCount, activeErrCount)
+	}
+
+	history, err := repo.RecentByApp(app.ID, 10)
+	if err != nil {
+		t.Fatalf("RecentByApp() error = %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("len(history) = %d, want 1", len(history))
+	}
+
+	found, err := appRepo.FindByID(app.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if found.Status != model.AppStatusProcessing {
+		t.Fatalf("app status = %s, want processing", found.Status)
 	}
 }

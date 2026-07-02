@@ -75,14 +75,6 @@ func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTask
 		return nil, err
 	}
 
-	active, err := s.hardeningRepo.HasActiveTaskForApp(app.ID)
-	if err != nil {
-		return nil, err
-	}
-	if active {
-		return nil, ErrHardeningActiveTaskExists
-	}
-
 	strategy := model.Strategy{}
 	if input.StrategySnapshot != nil {
 		strategy = *input.StrategySnapshot
@@ -111,10 +103,13 @@ func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTask
 		CreatedBy:                input.CreatedBy,
 	}
 
-	if err := s.hardeningRepo.CreateTaskWithSteps(task); err != nil {
-		return nil, err
-	}
-	if err := s.appRepo.UpdateStatus(app.ID, model.AppStatusProcessing); err != nil {
+	if err := s.hardeningRepo.CreateTaskWithStepsForApp(task, model.AppStatusProcessing); err != nil {
+		if errors.Is(err, repository.ErrActiveHardeningTaskExists) {
+			return nil, ErrHardeningActiveTaskExists
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrHardeningAppNotFound
+		}
 		return nil, err
 	}
 
