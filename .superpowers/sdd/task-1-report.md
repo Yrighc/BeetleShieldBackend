@@ -67,3 +67,24 @@ go test ./internal/config ./internal/db ./internal/pkg/storage -v
 - PASS: `beetleshield-backend/internal/pkg/storage`
 - Removed the `.env.example` `DPT_DEFAULT_VMP_RULES` override and replaced it with a short note that the built-in two-line VMP default is used.
 - Added explicit pre/post cleanup for `hardening_logs` and `hardening_steps` associated with `TASK-MIGRATION-001` without relying on cascade deletion.
+
+## Fix 2: Review Findings on 2026-07-02
+
+### Files Changed
+
+- `internal/db/db_test.go`
+- `.superpowers/sdd/task-1-report.md`
+
+### Tests Run
+
+```bash
+go test ./internal/db -run TestMigrate_HardeningTables -count=2 -v
+go test ./internal/config ./internal/db ./internal/pkg/storage -v
+```
+
+### Results
+
+- PASS: `go test ./internal/db -run TestMigrate_HardeningTables -count=2 -v`
+- PASS: `go test ./internal/config ./internal/db ./internal/pkg/storage -v`
+- Added a regression test proving hardening cleanup must remove the task row after deleting logs and steps.
+- Consolidated hardening cleanup for `TASK-MIGRATION-001` into one ordered helper that deletes `hardening_logs`, then `hardening_steps`, then `hardening_tasks`, with no separate task-row defer left behind to race the subquery cleanup.
