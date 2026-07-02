@@ -3,7 +3,9 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -38,6 +40,8 @@ func (s hardeningRepoTestScope) taskNo(suffix string) string {
 
 func setupHardeningRepo(t *testing.T) (*HardeningRepository, *AppRepository, *gorm.DB, hardeningRepoTestScope) {
 	t.Helper()
+	lockFile := acquireHardeningTestLock(t)
+	t.Cleanup(func() { releaseHardeningTestLock(t, lockFile) })
 	scope := newHardeningRepoTestScope()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
@@ -54,6 +58,29 @@ func setupHardeningRepo(t *testing.T) (*HardeningRepository, *AppRepository, *go
 	cleanupHardeningRepoData(t, database, scope)
 	t.Cleanup(func() { cleanupHardeningRepoData(t, database, scope) })
 	return NewHardeningRepository(database), NewAppRepository(database), database, scope
+}
+
+func acquireHardeningTestLock(t *testing.T) *os.File {
+	t.Helper()
+	lockFile, err := os.OpenFile("/tmp/beetleshield-hardening-tests.lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open hardening test lock: %v", err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		lockFile.Close()
+		t.Fatalf("acquire hardening test lock: %v", err)
+	}
+	return lockFile
+}
+
+func releaseHardeningTestLock(t *testing.T, lockFile *os.File) {
+	t.Helper()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatalf("release hardening test lock: %v", err)
+	}
+	if err := lockFile.Close(); err != nil {
+		t.Fatalf("close hardening test lock: %v", err)
+	}
 }
 
 func cleanupHardeningRepoData(t *testing.T, database *gorm.DB, scope hardeningRepoTestScope) {
@@ -298,17 +325,34 @@ func TestHardeningRepository_FailedTaskAndStepTransitions(t *testing.T) {
 	if err := repo.MarkTaskRunning(task.ID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
+	advanceStepSuccess := func(key model.HardeningStepKey, startedAt time.Time) {
+		t.Helper()
+		step, err := repo.FindStep(task.ID, key)
+		if err != nil {
+			t.Fatalf("FindStep(%s) error = %v", key, err)
+		}
+		if err := repo.StartStep(step.ID, startedAt); err != nil {
+			t.Fatalf("StartStep(%s) error = %v", key, err)
+		}
+		if err := repo.FinishStepSuccess(step.ID, startedAt.Add(time.Millisecond)); err != nil {
+			t.Fatalf("FinishStepSuccess(%s) error = %v", key, err)
+		}
+	}
+	advanceStepSuccess(model.HardeningStepPrepareInput, now.Add(time.Millisecond))
+	advanceStepSuccess(model.HardeningStepParsePackage, now.Add(2*time.Millisecond))
+	advanceStepSuccess(model.HardeningStepApplyStrategy, now.Add(3*time.Millisecond))
+
 	step, err := repo.FindStep(task.ID, model.HardeningStepRunEngine)
 	if err != nil {
 		t.Fatalf("FindStep() error = %v", err)
 	}
-	if err := repo.StartStep(step.ID, now.Add(time.Second)); err != nil {
+	if err := repo.StartStep(step.ID, now.Add(4*time.Millisecond)); err != nil {
 		t.Fatalf("StartStep() error = %v", err)
 	}
-	if err := repo.FinishStepFailed(step.ID, "engine crashed", now.Add(2*time.Second)); err != nil {
+	if err := repo.FinishStepFailed(step.ID, "engine crashed", now.Add(5*time.Millisecond)); err != nil {
 		t.Fatalf("FinishStepFailed() error = %v", err)
 	}
-	if err := repo.MarkTaskFailed(task.ID, "engine crashed", now.Add(3*time.Second)); err != nil {
+	if err := repo.MarkTaskFailed(task.ID, "engine crashed", now.Add(6*time.Millisecond)); err != nil {
 		t.Fatalf("MarkTaskFailed() error = %v", err)
 	}
 
@@ -369,6 +413,21 @@ func TestHardeningRepository_TransitionStateGuards(t *testing.T) {
 	}
 	if err := repo.FinishStepSuccess(step.ID, now.Add(3*time.Second)); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("FinishStepSuccess() after failure error = %v, want %v", err, gorm.ErrRecordNotFound)
+	}
+
+	outOfOrderTask := newRepoTask(scope, "guards-out-of-order", app.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&outOfOrderTask); err != nil {
+		t.Fatalf("CreateTaskWithSteps() out-of-order error = %v", err)
+	}
+	if err := repo.MarkTaskRunning(outOfOrderTask.ID, now.Add(4*time.Second)); err != nil {
+		t.Fatalf("MarkTaskRunning() out-of-order error = %v", err)
+	}
+	runEngineStep, err := repo.FindStep(outOfOrderTask.ID, model.HardeningStepRunEngine)
+	if err != nil {
+		t.Fatalf("FindStep() out-of-order error = %v", err)
+	}
+	if err := repo.StartStep(runEngineStep.ID, now.Add(5*time.Second)); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("StartStep() out-of-order error = %v, want %v", err, gorm.ErrRecordNotFound)
 	}
 }
 

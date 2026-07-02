@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"errors"
 	"testing"
+
+	"gorm.io/gorm"
 
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/db"
@@ -128,5 +131,9 @@ func TestAppRepository_UpdateStatus(t *testing.T) {
 	}
 	if found.Status != model.AppStatusProcessing {
 		t.Fatalf("Status = %q, want %q", found.Status, model.AppStatusProcessing)
+	}
+
+	if err := repo.UpdateStatus(app.ID+9999, model.AppStatusFailed); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("UpdateStatus() missing app error = %v, want %v", err, gorm.ErrRecordNotFound)
 	}
 }

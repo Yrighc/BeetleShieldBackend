@@ -3,6 +3,7 @@ package worker
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -44,24 +45,39 @@ func (DPTRunner) Run(ctx context.Context, req EngineRunRequest, onLine func(mode
 	}
 
 	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
 	wg.Add(2)
-	go scanEngineLines(stdout, model.HardeningLogLevelInfo, onLine, &wg)
-	go scanEngineLines(stderr, model.HardeningLogLevelError, onLine, &wg)
+	go scanEngineLines(stdout, model.HardeningLogLevelInfo, onLine, &wg, errCh)
+	go scanEngineLines(stderr, model.HardeningLogLevelError, onLine, &wg, errCh)
 
 	waitErr := cmd.Wait()
 	wg.Wait()
+	close(errCh)
+
+	var scanErr error
+	for err := range errCh {
+		scanErr = errors.Join(scanErr, err)
+	}
+	if scanErr != nil {
+		return errors.Join(waitErr, scanErr)
+	}
 	return waitErr
 }
 
-func scanEngineLines(reader io.Reader, fallback model.HardeningLogLevel, onLine func(model.HardeningLogLevel, string), wg *sync.WaitGroup) {
+func scanEngineLines(reader io.Reader, fallback model.HardeningLogLevel, onLine func(model.HardeningLogLevel, string), wg *sync.WaitGroup, errCh chan<- error) {
 	defer wg.Done()
 
 	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if onLine != nil {
 			onLine(classifyEngineLine(line, fallback), line)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		errCh <- err
 	}
 }
 

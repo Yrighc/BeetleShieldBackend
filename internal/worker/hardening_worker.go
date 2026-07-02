@@ -29,24 +29,31 @@ type HardeningWorkerConfig struct {
 }
 
 type HardeningWorker struct {
-	repo    *repository.HardeningRepository
-	appRepo *repository.AppRepository
-	storage ObjectStorage
-	runner  EngineRunner
-	cfg     HardeningWorkerConfig
+	repo             *repository.HardeningRepository
+	appRepo          *repository.AppRepository
+	appStatusUpdater appStatusUpdater
+	storage          ObjectStorage
+	runner           EngineRunner
+	cfg              HardeningWorkerConfig
+}
+
+type appStatusUpdater interface {
+	UpdateStatus(id uint, status model.AppStatus) error
 }
 
 func NewHardeningWorker(repo *repository.HardeningRepository, appRepo *repository.AppRepository, storage ObjectStorage, runner EngineRunner, cfg HardeningWorkerConfig) *HardeningWorker {
 	return &HardeningWorker{
-		repo:    repo,
-		appRepo: appRepo,
-		storage: storage,
-		runner:  runner,
-		cfg:     cfg,
+		repo:             repo,
+		appRepo:          appRepo,
+		appStatusUpdater: appRepo,
+		storage:          storage,
+		runner:           runner,
+		cfg:              cfg,
 	}
 }
 
 func (w *HardeningWorker) RecoverRunning(ctx context.Context) error {
+	_ = ctx
 	ids, err := w.repo.RecoverRunningTasks("服务重启导致任务中断")
 	if err != nil {
 		return err
@@ -54,8 +61,11 @@ func (w *HardeningWorker) RecoverRunning(ctx context.Context) error {
 
 	for _, id := range ids {
 		task, findErr := w.repo.FindByID(id)
-		if findErr == nil {
-			_ = w.appRepo.UpdateStatus(task.AppID, model.AppStatusFailed)
+		if findErr != nil {
+			return findErr
+		}
+		if err := w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusFailed); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -77,7 +87,7 @@ func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 	if err := w.runTask(ctx, task); err != nil {
 		now := time.Now()
 		_ = w.repo.MarkTaskFailed(task.ID, err.Error(), now)
-		_ = w.appRepo.UpdateStatus(task.AppID, model.AppStatusFailed)
+		_ = w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusFailed)
 		return true, nil
 	}
 
@@ -228,7 +238,7 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 		return err
 	}
 
-	return w.appRepo.UpdateStatus(task.AppID, model.AppStatusCompleted)
+	return w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusCompleted)
 }
 
 func (w *HardeningWorker) runStep(taskID uint, key model.HardeningStepKey, fn func(*model.HardeningStep) error) error {

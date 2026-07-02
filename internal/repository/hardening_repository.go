@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -275,13 +276,42 @@ func (r *HardeningRepository) FindStep(taskID uint, key model.HardeningStepKey) 
 }
 
 func (r *HardeningRepository) StartStep(stepID uint, startedAt time.Time) error {
-	return requireUpdatedRow(r.db.Model(&model.HardeningStep{}).
-		Where("id = ? AND status = ?", stepID, model.HardeningStepStatusWaiting).
-		Updates(map[string]interface{}{
-			"status":      model.HardeningStepStatusRunning,
-			"started_at":  startedAt,
-			"finished_at": nil,
-		}))
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var step model.HardeningStep
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&step, stepID).Error; err != nil {
+			return err
+		}
+		if step.Status != model.HardeningStepStatusWaiting {
+			return gorm.ErrRecordNotFound
+		}
+
+		var task model.HardeningTask
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&task, step.TaskID).Error; err != nil {
+			return err
+		}
+		if task.Status != model.HardeningTaskStatusRunning {
+			return gorm.ErrRecordNotFound
+		}
+
+		var incompletePriorSteps int64
+		if err := tx.Model(&model.HardeningStep{}).
+			Where("task_id = ? AND sort_order < ? AND status <> ?", step.TaskID, step.SortOrder, model.HardeningStepStatusSuccess).
+			Count(&incompletePriorSteps).Error; err != nil {
+			return err
+		}
+		if incompletePriorSteps > 0 {
+			return fmt.Errorf("%w: prior steps incomplete", gorm.ErrRecordNotFound)
+		}
+
+		return requireUpdatedRow(tx.Model(&model.HardeningStep{}).
+			Where("id = ? AND status = ?", stepID, model.HardeningStepStatusWaiting).
+			Updates(map[string]interface{}{
+				"status":        model.HardeningStepStatusRunning,
+				"started_at":    startedAt,
+				"finished_at":   nil,
+				"error_message": "",
+			}))
+	})
 }
 
 func (r *HardeningRepository) FinishStepSuccess(stepID uint, finishedAt time.Time) error {
