@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: beetleshield-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: beetleshield
+      POSTGRES_PASSWORD: beetleshield
+      POSTGRES_DB: beetleshield
+    ports:
+      - "5432:5432"
+    volumes:
+      - beetleshield_postgres_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: beetleshield-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: beetleshield
+      MINIO_ROOT_PASSWORD: beetleshield123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - beetleshield_minio_data:/data
+
+volumes:
+  beetleshield_postgres_data:
+  beetleshield_minio_data:
