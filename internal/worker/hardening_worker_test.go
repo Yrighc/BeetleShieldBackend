@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -59,14 +60,7 @@ type fakeEngineRunner struct {
 	lines         []string
 	lastCommand   []string
 	blockOnCtx    bool
-}
-
-type fakeAppStatusUpdater struct {
-	err error
-}
-
-func (f fakeAppStatusUpdater) UpdateStatus(id uint, status model.AppStatus) error {
-	return f.err
+	beforeReturn  func() error
 }
 
 func (r *fakeEngineRunner) Run(ctx context.Context, req EngineRunRequest, onLine func(model.HardeningLogLevel, string)) error {
@@ -90,7 +84,32 @@ func (r *fakeEngineRunner) Run(ctx context.Context, req EngineRunRequest, onLine
 			return err
 		}
 	}
+	if r.beforeReturn != nil {
+		if err := r.beforeReturn(); err != nil {
+			return err
+		}
+	}
 	return r.err
+}
+
+type fakeAppStatusUpdater struct {
+	err   error
+	calls []appStatusUpdateCall
+}
+
+type appStatusUpdateCall struct {
+	id     uint
+	status model.AppStatus
+}
+
+func (f *fakeAppStatusUpdater) UpdateStatus(id uint, status model.AppStatus) error {
+	f.calls = append(f.calls, appStatusUpdateCall{id: id, status: status})
+	return f.err
+}
+
+type workerTestScope struct {
+	taskPrefix    string
+	packagePrefix string
 }
 
 func commandValue(args []string, flag string) string {
@@ -102,10 +121,11 @@ func commandValue(args []string, flag string) string {
 	return ""
 }
 
-func setupWorkerTest(t *testing.T) (*gorm.DB, *HardeningWorker, *repository.HardeningRepository, *repository.AppRepository, *fakeWorkerStorage, *fakeEngineRunner) {
+func setupWorkerTest(t *testing.T) (*gorm.DB, *HardeningWorker, *repository.HardeningRepository, *repository.AppRepository, *fakeWorkerStorage, *fakeEngineRunner, workerTestScope) {
 	t.Helper()
 	lockFile := acquireHardeningTestLock(t)
 	t.Cleanup(func() { releaseHardeningTestLock(t, lockFile) })
+
 	cfg := &config.Config{
 		DBHost:     "localhost",
 		DBPort:     "5432",
@@ -121,15 +141,13 @@ func setupWorkerTest(t *testing.T) (*gorm.DB, *HardeningWorker, *repository.Hard
 	if err := db.Migrate(database); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	database.Exec("DELETE FROM hardening_logs WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-WORKER-%')")
-	database.Exec("DELETE FROM hardening_steps WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-WORKER-%')")
-	database.Exec("DELETE FROM hardening_tasks WHERE task_no LIKE 'TASK-WORKER-%'")
-	database.Unscoped().Where("package_name LIKE ?", "com.hardening.worker.%").Delete(&model.App{})
+
+	scope := newWorkerTestScope(t)
 	t.Cleanup(func() {
-		database.Exec("DELETE FROM hardening_logs WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-WORKER-%')")
-		database.Exec("DELETE FROM hardening_steps WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE 'TASK-WORKER-%')")
-		database.Exec("DELETE FROM hardening_tasks WHERE task_no LIKE 'TASK-WORKER-%'")
-		database.Unscoped().Where("package_name LIKE ?", "com.hardening.worker.%").Delete(&model.App{})
+		database.Exec("DELETE FROM hardening_logs WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE ?)", scope.taskPrefix+"%")
+		database.Exec("DELETE FROM hardening_steps WHERE task_id IN (SELECT id FROM hardening_tasks WHERE task_no LIKE ?)", scope.taskPrefix+"%")
+		database.Exec("DELETE FROM hardening_tasks WHERE task_no LIKE ?", scope.taskPrefix+"%")
+		database.Unscoped().Where("package_name LIKE ?", scope.packagePrefix+"%").Delete(&model.App{})
 	})
 
 	appRepo := repository.NewAppRepository(database)
@@ -146,7 +164,24 @@ func setupWorkerTest(t *testing.T) (*gorm.DB, *HardeningWorker, *repository.Hard
 		DefaultVMPRules: "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
 		Timeout:         time.Minute,
 	})
-	return database, w, repo, appRepo, storage, runner
+	return database, w, repo, appRepo, storage, runner, scope
+}
+
+func newWorkerTestScope(t *testing.T) workerTestScope {
+	t.Helper()
+	namespace := fmt.Sprintf("%07x-%x", checksumString(t.Name()), time.Now().UnixNano())
+	return workerTestScope{
+		taskPrefix:    "TASK-W-" + strings.ToUpper(namespace),
+		packagePrefix: "com.hardening.worker." + namespace,
+	}
+}
+
+func checksumString(value string) uint32 {
+	var sum uint32
+	for i := 0; i < len(value); i++ {
+		sum = sum*33 + uint32(value[i])
+	}
+	return sum
 }
 
 func acquireHardeningTestLock(t *testing.T) *os.File {
@@ -172,15 +207,16 @@ func releaseHardeningTestLock(t *testing.T, lockFile *os.File) {
 	}
 }
 
-func createWorkerTask(t *testing.T, database *gorm.DB, repo *repository.HardeningRepository, appRepo *repository.AppRepository, storage *fakeWorkerStorage, suffix string) model.HardeningTask {
+func createWorkerTask(t *testing.T, database *gorm.DB, repo *repository.HardeningRepository, appRepo *repository.AppRepository, storage *fakeWorkerStorage, scope workerTestScope, suffix string) model.HardeningTask {
 	t.Helper()
+	objectKeyBase := strings.ToLower(strings.ReplaceAll(scope.taskPrefix, "TASK-W-", ""))
 	app := model.App{
 		Name:        "Worker App " + suffix,
-		PackageName: "com.hardening.worker." + suffix,
+		PackageName: scope.packagePrefix + "." + suffix,
 		Version:     "1.0.0",
 		Tag:         model.AppTagTool,
 		Status:      model.AppStatusProcessing,
-		ObjectKey:   "worker/" + suffix + "/input.apk",
+		ObjectKey:   "worker/" + objectKeyBase + "/" + suffix + "/input.apk",
 		MD5:         "d41d8cd98f00b204e9800998ecf8427e",
 		SHA256:      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		UploadedBy:  1,
@@ -191,7 +227,7 @@ func createWorkerTask(t *testing.T, database *gorm.DB, repo *repository.Hardenin
 	storage.objects[app.ObjectKey] = []byte("input apk")
 
 	task := model.HardeningTask{
-		TaskNo:                   "TASK-WORKER-" + strings.ToUpper(suffix),
+		TaskNo:                   fmt.Sprintf("%s-%06x", scope.taskPrefix, checksumString(suffix)&0xffffff),
 		AppID:                    app.ID,
 		Status:                   model.HardeningTaskStatusQueued,
 		StrategyName:             "默认加固模板",
@@ -211,8 +247,8 @@ func createWorkerTask(t *testing.T, database *gorm.DB, repo *repository.Hardenin
 }
 
 func TestHardeningWorker_ProcessNextSuccessUploadsArtifacts(t *testing.T) {
-	database, w, repo, appRepo, storage, runner := setupWorkerTest(t)
-	task := createWorkerTask(t, database, repo, appRepo, storage, "success")
+	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "success")
 
 	processed, err := w.ProcessNext(context.Background())
 	if err != nil {
@@ -259,40 +295,115 @@ func TestHardeningWorker_ProcessNextSuccessUploadsArtifacts(t *testing.T) {
 }
 
 func TestHardeningWorker_ProcessNextNoUnsignedFails(t *testing.T) {
-	database, w, repo, appRepo, storage, runner := setupWorkerTest(t)
+	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
 	runner.writeUnsigned = false
 	runner.writeSigned = true
-	task := createWorkerTask(t, database, repo, appRepo, storage, "fail")
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "fail")
 
 	processed, err := w.ProcessNext(context.Background())
-	if err != nil {
-		t.Fatalf("ProcessNext() error = %v", err)
-	}
 	if !processed {
 		t.Fatal("processed = false, want true")
 	}
+	if err == nil || !strings.Contains(err.Error(), "未生成未签名加固产物") {
+		t.Fatalf("ProcessNext() error = %v, want missing unsigned artifact", err)
+	}
 
-	found, err := repo.FindByID(task.ID)
-	if err != nil {
-		t.Fatalf("FindByID() error = %v", err)
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
 	}
 	if found.Status != model.HardeningTaskStatusFailed {
 		t.Fatalf("task status = %s, want failed", found.Status)
 	}
 
-	app, err := appRepo.FindByID(found.AppID)
-	if err != nil {
-		t.Fatalf("FindByID(app) error = %v", err)
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
 	}
 	if app.Status != model.AppStatusFailed {
 		t.Fatalf("app status = %s, want failed", app.Status)
 	}
 }
 
+func TestHardeningWorker_ProcessNextReturnsMarkFailedErrorAfterRunFailure(t *testing.T) {
+	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "mark-failed-error")
+	runErr := errors.New("engine crashed")
+	runner.err = runErr
+	runner.beforeReturn = func() error {
+		return database.Model(&model.HardeningTask{}).
+			Where("id = ?", task.ID).
+			Update("status", model.HardeningTaskStatusCompleted).Error
+	}
+
+	processed, err := w.ProcessNext(context.Background())
+	if !processed {
+		t.Fatal("processed = false, want true")
+	}
+	if !errors.Is(err, runErr) {
+		t.Fatalf("ProcessNext() error = %v, want %v", err, runErr)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("ProcessNext() error = %v, want %v", err, gorm.ErrRecordNotFound)
+	}
+
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
+	}
+	if found.Status != model.HardeningTaskStatusCompleted {
+		t.Fatalf("task status = %s, want completed after failed persistence", found.Status)
+	}
+
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
+	}
+	if app.Status != model.AppStatusFailed {
+		t.Fatalf("app status = %s, want failed", app.Status)
+	}
+}
+
+func TestHardeningWorker_ProcessNextReturnsAppStatusErrorAfterRunFailure(t *testing.T) {
+	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "app-status-error")
+	runErr := errors.New("engine crashed")
+	updateErr := errors.New("status persistence failed")
+	runner.err = runErr
+	w.appStatusUpdater = &fakeAppStatusUpdater{err: updateErr}
+
+	processed, err := w.ProcessNext(context.Background())
+	if !processed {
+		t.Fatal("processed = false, want true")
+	}
+	if !errors.Is(err, runErr) {
+		t.Fatalf("ProcessNext() error = %v, want %v", err, runErr)
+	}
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("ProcessNext() error = %v, want %v", err, updateErr)
+	}
+
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
+	}
+	if found.Status != model.HardeningTaskStatusFailed {
+		t.Fatalf("task status = %s, want failed", found.Status)
+	}
+
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
+	}
+	if app.Status != model.AppStatusProcessing {
+		t.Fatalf("app status = %s, want processing when update fails", app.Status)
+	}
+}
+
 func TestHardeningWorker_ProcessNextWithoutSignedArtifactStillCompletes(t *testing.T) {
-	database, w, repo, appRepo, storage, runner := setupWorkerTest(t)
+	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
 	runner.writeSigned = false
-	task := createWorkerTask(t, database, repo, appRepo, storage, "unsigned-only")
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "unsigned-only")
 
 	processed, err := w.ProcessNext(context.Background())
 	if err != nil {
@@ -302,9 +413,9 @@ func TestHardeningWorker_ProcessNextWithoutSignedArtifactStillCompletes(t *testi
 		t.Fatal("processed = false, want true")
 	}
 
-	found, err := repo.FindByID(task.ID)
-	if err != nil {
-		t.Fatalf("FindByID() error = %v", err)
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
 	}
 	if found.Status != model.HardeningTaskStatusCompleted {
 		t.Fatalf("task status = %s, want completed", found.Status)
@@ -313,9 +424,9 @@ func TestHardeningWorker_ProcessNextWithoutSignedArtifactStillCompletes(t *testi
 		t.Fatalf("SignedTestObjectKey = %q, want empty", found.SignedTestObjectKey)
 	}
 
-	logs, err := repo.Logs(task.ID, repository.HardeningLogFilter{Limit: 50})
-	if err != nil {
-		t.Fatalf("Logs() error = %v", err)
+	logs, logErr := repo.Logs(task.ID, repository.HardeningLogFilter{Limit: 50})
+	if logErr != nil {
+		t.Fatalf("Logs() error = %v", logErr)
 	}
 	foundWarn := false
 	for _, log := range logs {
@@ -328,9 +439,9 @@ func TestHardeningWorker_ProcessNextWithoutSignedArtifactStillCompletes(t *testi
 		t.Fatal("expected warn log for missing signed artifact")
 	}
 
-	app, err := appRepo.FindByID(found.AppID)
-	if err != nil {
-		t.Fatalf("FindByID(app) error = %v", err)
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
 	}
 	if app.Status != model.AppStatusCompleted {
 		t.Fatalf("app status = %s, want completed", app.Status)
@@ -338,22 +449,22 @@ func TestHardeningWorker_ProcessNextWithoutSignedArtifactStillCompletes(t *testi
 }
 
 func TestHardeningWorker_ProcessNextUploadFailureMarksTaskAndAppFailed(t *testing.T) {
-	database, w, repo, appRepo, storage, runner := setupWorkerTest(t)
+	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
 	storage.putErr = errors.New("upload failed")
 	storage.putFailAfter = 2
-	task := createWorkerTask(t, database, repo, appRepo, storage, "upload-fail")
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "upload-fail")
 
 	processed, err := w.ProcessNext(context.Background())
-	if err != nil {
-		t.Fatalf("ProcessNext() error = %v", err)
-	}
 	if !processed {
 		t.Fatal("processed = false, want true")
 	}
+	if !errors.Is(err, storage.putErr) {
+		t.Fatalf("ProcessNext() error = %v, want %v", err, storage.putErr)
+	}
 
-	found, err := repo.FindByID(task.ID)
-	if err != nil {
-		t.Fatalf("FindByID() error = %v", err)
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
 	}
 	if found.Status != model.HardeningTaskStatusFailed {
 		t.Fatalf("task status = %s, want failed", found.Status)
@@ -371,17 +482,17 @@ func TestHardeningWorker_ProcessNextUploadFailureMarksTaskAndAppFailed(t *testin
 		t.Fatal("signed artifact should not upload after failure")
 	}
 
-	app, err := appRepo.FindByID(found.AppID)
-	if err != nil {
-		t.Fatalf("FindByID(app) error = %v", err)
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
 	}
 	if app.Status != model.AppStatusFailed {
 		t.Fatalf("app status = %s, want failed", app.Status)
 	}
 
-	uploadStep, err := repo.FindStep(task.ID, model.HardeningStepUploadArtifacts)
-	if err != nil {
-		t.Fatalf("FindStep(upload) error = %v", err)
+	uploadStep, stepErr := repo.FindStep(task.ID, model.HardeningStepUploadArtifacts)
+	if stepErr != nil {
+		t.Fatalf("FindStep(upload) error = %v", stepErr)
 	}
 	if uploadStep.Status != model.HardeningStepStatusFailed {
 		t.Fatalf("upload step status = %s, want failed", uploadStep.Status)
@@ -391,22 +502,22 @@ func TestHardeningWorker_ProcessNextUploadFailureMarksTaskAndAppFailed(t *testin
 }
 
 func TestHardeningWorker_ProcessNextContextCancellationMarksTaskAndAppFailed(t *testing.T) {
-	database, w, repo, appRepo, storage, runner := setupWorkerTest(t)
+	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
 	runner.blockOnCtx = true
 	w.cfg.Timeout = 20 * time.Millisecond
-	task := createWorkerTask(t, database, repo, appRepo, storage, "ctx-timeout")
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "ctx-timeout")
 
 	processed, err := w.ProcessNext(context.Background())
-	if err != nil {
-		t.Fatalf("ProcessNext() error = %v", err)
-	}
 	if !processed {
 		t.Fatal("processed = false, want true")
 	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ProcessNext() error = %v, want %v", err, context.DeadlineExceeded)
+	}
 
-	found, err := repo.FindByID(task.ID)
-	if err != nil {
-		t.Fatalf("FindByID() error = %v", err)
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
 	}
 	if found.Status != model.HardeningTaskStatusFailed {
 		t.Fatalf("task status = %s, want failed", found.Status)
@@ -415,9 +526,9 @@ func TestHardeningWorker_ProcessNextContextCancellationMarksTaskAndAppFailed(t *
 		t.Fatalf("error summary = %q, want context deadline exceeded", found.ErrorSummary)
 	}
 
-	app, err := appRepo.FindByID(found.AppID)
-	if err != nil {
-		t.Fatalf("FindByID(app) error = %v", err)
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
 	}
 	if app.Status != model.AppStatusFailed {
 		t.Fatalf("app status = %s, want failed", app.Status)
@@ -425,8 +536,8 @@ func TestHardeningWorker_ProcessNextContextCancellationMarksTaskAndAppFailed(t *
 }
 
 func TestHardeningWorker_RecoverRunningMarksTasksAndAppsFailed(t *testing.T) {
-	database, w, repo, appRepo, storage, _ := setupWorkerTest(t)
-	task := createWorkerTask(t, database, repo, appRepo, storage, "recover")
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "recover")
 	if err := repo.MarkTaskRunning(task.ID, time.Now()); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
@@ -452,13 +563,45 @@ func TestHardeningWorker_RecoverRunningMarksTasksAndAppsFailed(t *testing.T) {
 	}
 }
 
-func TestHardeningWorker_RecoverRunningReturnsErrorWhenAppStatusUpdateFails(t *testing.T) {
-	database, w, repo, appRepo, storage, _ := setupWorkerTest(t)
-	task := createWorkerTask(t, database, repo, appRepo, storage, "recover-missing-app")
+func TestHardeningWorker_RecoverRunningHonorsCanceledContext(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "recover-canceled")
 	if err := repo.MarkTaskRunning(task.ID, time.Now()); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	w.appStatusUpdater = fakeAppStatusUpdater{err: gorm.ErrRecordNotFound}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := w.RecoverRunning(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RecoverRunning() error = %v, want %v", err, context.Canceled)
+	}
+
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
+	}
+	if found.Status != model.HardeningTaskStatusRunning {
+		t.Fatalf("task status = %s, want running", found.Status)
+	}
+
+	app, appErr := appRepo.FindByID(found.AppID)
+	if appErr != nil {
+		t.Fatalf("FindByID(app) error = %v", appErr)
+	}
+	if app.Status != model.AppStatusProcessing {
+		t.Fatalf("app status = %s, want processing", app.Status)
+	}
+}
+
+func TestHardeningWorker_RecoverRunningReturnsErrorWhenAppStatusUpdateFails(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "recover-missing-app")
+	if err := repo.MarkTaskRunning(task.ID, time.Now()); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	w.appStatusUpdater = &fakeAppStatusUpdater{err: gorm.ErrRecordNotFound}
 
 	err := w.RecoverRunning(context.Background())
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -466,9 +609,53 @@ func TestHardeningWorker_RecoverRunningReturnsErrorWhenAppStatusUpdateFails(t *t
 	}
 }
 
+func TestHardeningWorker_StartReportsRecoverRunningError(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "start-recover-error")
+	if err := repo.MarkTaskRunning(task.ID, time.Now()); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+
+	reportErr := errors.New("recover status persistence failed")
+	w.appStatusUpdater = &fakeAppStatusUpdater{err: reportErr}
+	errs := make(chan error, 1)
+	w.cfg.OnError = func(err error) {
+		errs <- err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx, 10*time.Millisecond)
+
+	err := waitForWorkerError(t, errs)
+	if !errors.Is(err, reportErr) {
+		t.Fatalf("reported error = %v, want %v", err, reportErr)
+	}
+}
+
+func TestHardeningWorker_StartReportsProcessNextError(t *testing.T) {
+	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
+	runner.err = errors.New("engine crashed")
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "start-process-error")
+	_ = task
+	errs := make(chan error, 1)
+	w.cfg.OnError = func(err error) {
+		errs <- err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx, 10*time.Millisecond)
+
+	err := waitForWorkerError(t, errs)
+	if !errors.Is(err, runner.err) {
+		t.Fatalf("reported error = %v, want %v", err, runner.err)
+	}
+}
+
 func TestHardeningWorker_RunStepOutOfOrderFails(t *testing.T) {
-	database, w, repo, appRepo, storage, _ := setupWorkerTest(t)
-	task := createWorkerTask(t, database, repo, appRepo, storage, "out-of-order")
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "out-of-order")
 	now := time.Now()
 	if err := repo.MarkTaskRunning(task.ID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
@@ -479,6 +666,17 @@ func TestHardeningWorker_RunStepOutOfOrderFails(t *testing.T) {
 	})
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("runStep() error = %v, want %v", err, gorm.ErrRecordNotFound)
+	}
+}
+
+func waitForWorkerError(t *testing.T, errs <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-errs:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for worker error")
+		return nil
 	}
 }
 

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,7 @@ type HardeningWorkerConfig struct {
 	WorkDir         string
 	DefaultVMPRules string
 	Timeout         time.Duration
+	OnError         func(error)
 }
 
 type HardeningWorker struct {
@@ -53,16 +55,24 @@ func NewHardeningWorker(repo *repository.HardeningRepository, appRepo *repositor
 }
 
 func (w *HardeningWorker) RecoverRunning(ctx context.Context) error {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ids, err := w.repo.RecoverRunningTasks("服务重启导致任务中断")
 	if err != nil {
 		return err
 	}
 
 	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		task, findErr := w.repo.FindByID(id)
 		if findErr != nil {
 			return findErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if err := w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusFailed); err != nil {
 			return err
@@ -86,9 +96,9 @@ func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 
 	if err := w.runTask(ctx, task); err != nil {
 		now := time.Now()
-		_ = w.repo.MarkTaskFailed(task.ID, err.Error(), now)
-		_ = w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusFailed)
-		return true, nil
+		markErr := w.repo.MarkTaskFailed(task.ID, err.Error(), now)
+		updateErr := w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusFailed)
+		return true, errors.Join(err, markErr, updateErr)
 	}
 
 	return true, nil
@@ -96,7 +106,9 @@ func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 
 func (w *HardeningWorker) Start(ctx context.Context, interval time.Duration) {
 	go func() {
-		_ = w.RecoverRunning(ctx)
+		if err := w.RecoverRunning(ctx); err != nil && ctx.Err() == nil {
+			w.reportAsyncError(err)
+		}
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -108,7 +120,9 @@ func (w *HardeningWorker) Start(ctx context.Context, interval time.Duration) {
 			default:
 			}
 
-			_, _ = w.ProcessNext(ctx)
+			if _, err := w.ProcessNext(ctx); err != nil && ctx.Err() == nil {
+				w.reportAsyncError(err)
+			}
 
 			select {
 			case <-ctx.Done():
@@ -117,6 +131,13 @@ func (w *HardeningWorker) Start(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+}
+
+func (w *HardeningWorker) reportAsyncError(err error) {
+	if err == nil || w.cfg.OnError == nil {
+		return
+	}
+	w.cfg.OnError(err)
 }
 
 func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask) error {
