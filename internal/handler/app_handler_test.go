@@ -21,7 +21,7 @@ import (
 	"beetleshield-backend/internal/service"
 )
 
-func setupFullRouter(t *testing.T) (*httptest.Server, string, func()) {
+func setupFullRouter(t *testing.T) (*httptest.Server, string, string, func()) {
 	t.Helper()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
@@ -49,10 +49,23 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, func()) {
 		t.Fatalf("create test user: %v", err)
 	}
 
+	auditorUser := model.User{
+		Name: "应用接口审计员", Email: "apphandler-auditor@beetleshield.com",
+		PasswordHash: hashed, Role: model.RoleAuditor, Status: model.UserStatusActive,
+	}
+	userRepo.DeleteByEmail(auditorUser.Email)
+	if err := userRepo.Create(&auditorUser); err != nil {
+		t.Fatalf("create auditor user: %v", err)
+	}
+
 	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours)
 	token, _, err := authService.Login(testUser.Email, "Password123!")
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
+	}
+	auditorToken, _, err := authService.Login(auditorUser.Email, "Password123!")
+	if err != nil {
+		t.Fatalf("auditor Login() error = %v", err)
 	}
 	authHandler := handler.NewAuthHandler(authService)
 
@@ -76,14 +89,15 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, func()) {
 
 	cleanup := func() {
 		userRepo.DeleteByEmail(testUser.Email)
+		userRepo.DeleteByEmail(auditorUser.Email)
 		database.Unscoped().Where("package_name LIKE ?", "com.handlertest.%").Delete(&model.App{})
 		srv.Close()
 	}
-	return srv, token, cleanup
+	return srv, token, auditorToken, cleanup
 }
 
 func TestAppUploadListGetDownloadDelete(t *testing.T) {
-	srv, token, cleanup := setupFullRouter(t)
+	srv, token, _, cleanup := setupFullRouter(t)
 	defer cleanup()
 
 	var buf bytes.Buffer
@@ -188,7 +202,7 @@ func TestAppUploadListGetDownloadDelete(t *testing.T) {
 }
 
 func TestAppList_RequiresAuth(t *testing.T) {
-	srv, _, cleanup := setupFullRouter(t)
+	srv, _, _, cleanup := setupFullRouter(t)
 	defer cleanup()
 
 	resp, err := http.Get(srv.URL + "/api/v1/apps")
@@ -198,5 +212,55 @@ func TestAppList_RequiresAuth(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestAppWriteRoutes_RequireAdminOrDeveloperRole(t *testing.T) {
+	srv, _, auditorToken, cleanup := setupFullRouter(t)
+	defer cleanup()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("tag", "tool"); err != nil {
+		t.Fatalf("WriteField(tag): %v", err)
+	}
+	if err := w.WriteField("packageName", "com.handlertest.rbac"); err != nil {
+		t.Fatalf("WriteField(packageName): %v", err)
+	}
+	if err := w.WriteField("version", "1.0.0"); err != nil {
+		t.Fatalf("WriteField(version): %v", err)
+	}
+	part, err := w.CreateFormFile("file", "rbac.aab")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write([]byte("rbac test content")); err != nil {
+		t.Fatalf("write part: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	uploadReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/apps/upload", &buf)
+	uploadReq.Header.Set("Content-Type", w.FormDataContentType())
+	uploadReq.Header.Set("Authorization", "Bearer "+auditorToken)
+	uploadResp, err := http.DefaultClient.Do(uploadReq)
+	if err != nil {
+		t.Fatalf("upload request: %v", err)
+	}
+	defer uploadResp.Body.Close()
+	if uploadResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("upload status = %d, want %d", uploadResp.StatusCode, http.StatusForbidden)
+	}
+
+	listReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/apps", nil)
+	listReq.Header.Set("Authorization", "Bearer "+auditorToken)
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatalf("list request: %v", err)
+	}
+	defer listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want %d (read routes must stay open to auditor)", listResp.StatusCode, http.StatusOK)
 	}
 }

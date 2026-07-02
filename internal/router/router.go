@@ -31,14 +31,16 @@ func New(deps Deps) *gin.Engine {
 			auth.GET("/me", middleware.JWTAuth(deps.JWTSecret), deps.AuthHandler.Me)
 		}
 
+		writeRoles := middleware.RequireRole(model.RoleAdmin, model.RoleDeveloper)
+
 		apps := v1.Group("/apps")
 		apps.Use(middleware.JWTAuth(deps.JWTSecret))
 		{
-			apps.POST("/upload", deps.AppHandler.Upload)
+			apps.POST("/upload", writeRoles, deps.AppHandler.Upload)
 			apps.GET("", deps.AppHandler.List)
 			apps.GET("/:id", deps.AppHandler.Get)
-			apps.DELETE("/:id", deps.AppHandler.Delete)
-			apps.GET("/:id/download-url", deps.AppHandler.DownloadURL)
+			apps.DELETE("/:id", writeRoles, deps.AppHandler.Delete)
+			apps.GET("/:id/download-url", writeRoles, deps.AppHandler.DownloadURL)
 		}
 
 		users := v1.Group("/users")
