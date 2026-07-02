@@ -10,6 +10,7 @@ import (
 type Deps struct {
 	JWTSecret   string
 	AuthHandler *handler.AuthHandler
+	AppHandler  *handler.AppHandler
 }
 
 // New 创建并配置一个新的gin引擎实例
@@ -38,6 +39,22 @@ func New(deps Deps) *gin.Engine {
 			auth.POST("/login", deps.AuthHandler.Login)
 			// 获取当前用户信息接口，需要JWT认证
 			auth.GET("/me", middleware.JWTAuth(deps.JWTSecret), deps.AuthHandler.Me)
+		}
+
+		// 应用管理相关路由组，均需要JWT认证
+		apps := v1.Group("/apps")
+		apps.Use(middleware.JWTAuth(deps.JWTSecret))
+		{
+			// 上传应用接口
+			apps.POST("/upload", deps.AppHandler.Upload)
+			// 应用列表接口
+			apps.GET("", deps.AppHandler.List)
+			// 应用详情接口
+			apps.GET("/:id", deps.AppHandler.Get)
+			// 删除应用接口
+			apps.DELETE("/:id", deps.AppHandler.Delete)
+			// 获取应用下载链接接口
+			apps.GET("/:id/download-url", deps.AppHandler.DownloadURL)
 		}
 	}
 

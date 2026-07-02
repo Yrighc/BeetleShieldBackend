@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/db"
 	"beetleshield-backend/internal/handler"
+	"beetleshield-backend/internal/pkg/storage"
 	"beetleshield-backend/internal/repository"
 	"beetleshield-backend/internal/router"
 	"beetleshield-backend/internal/service"
@@ -35,6 +37,16 @@ func main() {
 		log.Fatalf("failed to seed admin account: %v", err)
 	}
 
+	// 初始化对象存储客户端
+	storageClient, err := storage.NewMinioStorage(cfg.MinioEndpoint, cfg.MinioAccessKey, cfg.MinioSecretKey, cfg.MinioBucket, cfg.MinioUseSSL)
+	if err != nil {
+		log.Fatalf("failed to init storage client: %v", err)
+	}
+	// 确保存储桶存在
+	if err := storageClient.EnsureBucket(context.Background()); err != nil {
+		log.Fatalf("failed to ensure minio bucket: %v", err)
+	}
+
 	// 初始化用户仓库
 	userRepo := repository.NewUserRepository(database)
 	// 初始化认证服务
@@ -42,10 +54,18 @@ func main() {
 	// 初始化认证处理器
 	authHandler := handler.NewAuthHandler(authService)
 
+	// 初始化应用仓库
+	appRepo := repository.NewAppRepository(database)
+	// 初始化应用服务
+	appService := service.NewAppService(appRepo, storageClient, cfg.MaxUploadSizeMB)
+	// 初始化应用处理器
+	appHandler := handler.NewAppHandler(appService)
+
 	// 设置路由依赖
 	r := router.New(router.Deps{
 		JWTSecret:   cfg.JWTSecret,
 		AuthHandler: authHandler,
+		AppHandler:  appHandler,
 	})
 
 	// 启动服务器，监听配置的端口
