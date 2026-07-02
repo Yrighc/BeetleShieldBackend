@@ -68,9 +68,9 @@ func TestMigrate_AppsTable(t *testing.T) {
 	testApp := model.App{
 		Name: "迁移测试应用", PackageName: "com.migrationtest.app", Version: "0.0.1",
 		Tag: model.AppTagTool, Status: model.AppStatusUnprotected,
-		ObjectKey: "com.migrationtest.app/abc/app.apk",
-		MD5:       "d41d8cd98f00b204e9800998ecf8427e",
-		SHA256:    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+		ObjectKey:  "com.migrationtest.app/abc/app.apk",
+		MD5:        "d41d8cd98f00b204e9800998ecf8427e",
+		SHA256:     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
 		UploadedBy: 1,
 	}
 	database.Unscoped().Where("package_name = ?", testApp.PackageName).Delete(&model.App{})
@@ -114,4 +114,68 @@ func TestMigrate_StrategiesTable(t *testing.T) {
 	}
 
 	database.Unscoped().Where("updated_by = ?", uint(999999)).Delete(&model.Strategy{})
+}
+
+func TestMigrate_HardeningTables(t *testing.T) {
+	cfg := testConfig()
+	database, err := Connect(cfg)
+	if err != nil {
+		t.Fatalf("Connect() error = %v (is Postgres running?)", err)
+	}
+	if err := Migrate(database); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	app := model.App{
+		Name:        "Hardening Migration Test",
+		PackageName: "com.hardening.migration.test",
+		Version:     "1.0.0",
+		Tag:         model.AppTagTool,
+		Status:      model.AppStatusUnprotected,
+		ObjectKey:   "hardening/migration/app.apk",
+		MD5:         "d41d8cd98f00b204e9800998ecf8427e",
+		SHA256:      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		UploadedBy:  1,
+	}
+	database.Unscoped().Where("package_name = ?", app.PackageName).Delete(&model.App{})
+	if err := database.Create(&app).Error; err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	defer database.Unscoped().Where("package_name = ?", app.PackageName).Delete(&model.App{})
+
+	task := model.HardeningTask{
+		TaskNo:           "TASK-MIGRATION-001",
+		AppID:            app.ID,
+		Status:           model.HardeningTaskStatusQueued,
+		StrategyName:     "默认加固模板",
+		StrategySnapshot: model.Strategy{DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP},
+		VMPRulesText:     "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		CreatedBy:        1,
+	}
+	database.Unscoped().Where("task_no = ?", task.TaskNo).Delete(&model.HardeningTask{})
+	if err := database.Create(&task).Error; err != nil {
+		t.Fatalf("create hardening task: %v", err)
+	}
+	defer database.Unscoped().Where("task_no = ?", task.TaskNo).Delete(&model.HardeningTask{})
+
+	step := model.HardeningStep{
+		TaskID:    task.ID,
+		StepKey:   model.HardeningStepPrepareInput,
+		Name:      "准备输入",
+		Status:    model.HardeningStepStatusWaiting,
+		SortOrder: 1,
+	}
+	if err := database.Create(&step).Error; err != nil {
+		t.Fatalf("create hardening step: %v", err)
+	}
+
+	logLine := model.HardeningLog{
+		TaskID:  task.ID,
+		StepID:  &step.ID,
+		Level:   model.HardeningLogLevelInfo,
+		Message: "migration log line",
+	}
+	if err := database.Create(&logLine).Error; err != nil {
+		t.Fatalf("create hardening log: %v", err)
+	}
 }

@@ -25,7 +25,14 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 }
 
 func Migrate(database *gorm.DB) error {
-	return database.AutoMigrate(&model.User{}, &model.App{}, &model.Strategy{})
+	return database.AutoMigrate(
+		&model.User{},
+		&model.App{},
+		&model.Strategy{},
+		&model.HardeningTask{},
+		&model.HardeningStep{},
+		&model.HardeningLog{},
+	)
 }
 
 func SeedAdmin(database *gorm.DB, email, password string) error {

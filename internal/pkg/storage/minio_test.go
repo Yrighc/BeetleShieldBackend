@@ -3,6 +3,9 @@ package storage
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,5 +42,30 @@ func TestPutAndDeleteObject(t *testing.T) {
 
 	if err := s.DeleteObject(ctx, objectKey); err != nil {
 		t.Fatalf("DeleteObject() error = %v", err)
+	}
+}
+
+func TestMinioStorage_GetObjectToFile(t *testing.T) {
+	st := newTestStorage(t)
+	ctx := context.Background()
+	objectKey := "hardening-storage-test/source.txt"
+	body := strings.NewReader("download me")
+	if err := st.PutObject(ctx, objectKey, body, int64(body.Len()), "text/plain"); err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.DeleteObject(ctx, objectKey)
+	})
+
+	destination := filepath.Join(t.TempDir(), "downloaded.txt")
+	if err := st.GetObjectToFile(ctx, objectKey, destination); err != nil {
+		t.Fatalf("GetObjectToFile() error = %v", err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != "download me" {
+		t.Fatalf("downloaded content = %q", string(got))
 	}
 }
