@@ -151,6 +151,20 @@ func (r *HardeningRepository) MarkTaskCompleted(taskID uint, unsignedKey string,
 		}))
 }
 
+func (r *HardeningRepository) CompleteTaskForApp(taskID uint, unsignedKey string, unsignedSize int64, unsignedSHA string, signedKey string, signedSize int64, signedSHA string, finishedAt time.Time) error {
+	return r.transitionTaskForApp(taskID, model.HardeningTaskStatusRunning, map[string]interface{}{
+		"status":                 model.HardeningTaskStatusCompleted,
+		"unsigned_object_key":    unsignedKey,
+		"unsigned_file_size":     unsignedSize,
+		"unsigned_sha256":        unsignedSHA,
+		"signed_test_object_key": signedKey,
+		"signed_test_file_size":  signedSize,
+		"signed_test_sha256":     signedSHA,
+		"finished_at":            finishedAt,
+		"error_summary":          "",
+	}, model.AppStatusCompleted)
+}
+
 func (r *HardeningRepository) MarkTaskFailed(taskID uint, summary string, finishedAt time.Time) error {
 	return requireUpdatedRow(r.db.Model(&model.HardeningTask{}).
 		Where("id = ? AND status = ?", taskID, model.HardeningTaskStatusRunning).
@@ -161,41 +175,82 @@ func (r *HardeningRepository) MarkTaskFailed(taskID uint, summary string, finish
 		}))
 }
 
+func (r *HardeningRepository) FailTaskForApp(taskID uint, summary string, finishedAt time.Time) error {
+	return r.transitionTaskForApp(taskID, model.HardeningTaskStatusRunning, map[string]interface{}{
+		"status":        model.HardeningTaskStatusFailed,
+		"error_summary": summary,
+		"finished_at":   finishedAt,
+	}, model.AppStatusFailed)
+}
+
 func (r *HardeningRepository) RecoverRunningTasks(summary string) ([]uint, error) {
-	var tasks []model.HardeningTask
-	if err := r.db.Where("status = ?", model.HardeningTaskStatusRunning).Find(&tasks).Error; err != nil {
-		return nil, err
-	}
-
-	ids := make([]uint, 0, len(tasks))
-	for _, task := range tasks {
-		ids = append(ids, task.ID)
-	}
-	if len(ids) == 0 {
-		return ids, nil
-	}
-
-	now := time.Now()
+	var recoveredIDs []uint
 	err := r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.HardeningTask{}).
-			Where("id IN ?", ids).
-			Updates(map[string]interface{}{
+		var tasks []model.HardeningTask
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("status = ?", model.HardeningTaskStatusRunning).
+			Find(&tasks).Error; err != nil {
+			return err
+		}
+		if len(tasks) == 0 {
+			recoveredIDs = []uint{}
+			return nil
+		}
+
+		now := time.Now()
+		recoveredIDs = make([]uint, 0, len(tasks))
+		for _, task := range tasks {
+			recoveredIDs = append(recoveredIDs, task.ID)
+			if err := transitionTaskForAppTx(tx, task.ID, task.AppID, model.HardeningTaskStatusRunning, map[string]interface{}{
 				"status":        model.HardeningTaskStatusFailed,
 				"error_summary": summary,
 				"finished_at":   now,
-			}).Error; err != nil {
-			return err
+			}, model.AppStatusFailed); err != nil {
+				return err
+			}
 		}
 
 		return tx.Model(&model.HardeningStep{}).
-			Where("task_id IN ? AND status = ?", ids, model.HardeningStepStatusRunning).
+			Where("task_id IN ? AND status = ?", recoveredIDs, model.HardeningStepStatusRunning).
 			Updates(map[string]interface{}{
 				"status":        model.HardeningStepStatusFailed,
 				"error_message": summary,
 				"finished_at":   now,
 			}).Error
 	})
-	return ids, err
+	if err != nil {
+		return nil, err
+	}
+	return recoveredIDs, nil
+}
+
+func (r *HardeningRepository) transitionTaskForApp(taskID uint, expectedStatus model.HardeningTaskStatus, taskUpdates map[string]interface{}, appStatus model.AppStatus) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		task, err := lockHardeningTask(tx, taskID)
+		if err != nil {
+			return err
+		}
+		return transitionTaskForAppTx(tx, task.ID, task.AppID, expectedStatus, taskUpdates, appStatus)
+	})
+}
+
+func transitionTaskForAppTx(tx *gorm.DB, taskID uint, appID uint, expectedStatus model.HardeningTaskStatus, taskUpdates map[string]interface{}, appStatus model.AppStatus) error {
+	if err := requireUpdatedRow(tx.Model(&model.HardeningTask{}).
+		Where("id = ? AND status = ?", taskID, expectedStatus).
+		Updates(taskUpdates)); err != nil {
+		return err
+	}
+	return requireUpdatedRow(tx.Model(&model.App{}).
+		Where("id = ?", appID).
+		Update("status", appStatus))
+}
+
+func lockHardeningTask(tx *gorm.DB, taskID uint) (*model.HardeningTask, error) {
+	var task model.HardeningTask
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&task, taskID).Error; err != nil {
+		return nil, err
+	}
+	return &task, nil
 }
 
 func (r *HardeningRepository) List(filter HardeningListFilter) ([]model.HardeningTask, int64, error) {

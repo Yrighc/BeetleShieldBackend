@@ -60,6 +60,22 @@ func setupHardeningRepo(t *testing.T) (*HardeningRepository, *AppRepository, *go
 	return NewHardeningRepository(database), NewAppRepository(database), database, scope
 }
 
+func registerAppUpdateFailure(t *testing.T, database *gorm.DB, name string, err error) {
+	t.Helper()
+	if regErr := database.Callback().Update().Before("gorm:update").Register(name, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "apps" {
+			tx.AddError(err)
+		}
+	}); regErr != nil {
+		t.Fatalf("register update callback: %v", regErr)
+	}
+	t.Cleanup(func() {
+		if removeErr := database.Callback().Update().Remove(name); removeErr != nil {
+			t.Fatalf("remove update callback: %v", removeErr)
+		}
+	})
+}
+
 func acquireHardeningTestLock(t *testing.T) *os.File {
 	t.Helper()
 	lockFile, err := os.OpenFile("/tmp/beetleshield-hardening-tests.lock", os.O_CREATE|os.O_RDWR, 0o600)
@@ -373,6 +389,80 @@ func TestHardeningRepository_FailedTaskAndStepTransitions(t *testing.T) {
 	}
 }
 
+func TestHardeningRepository_CompleteTaskForAppUpdatesTaskAndAppAtomically(t *testing.T) {
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "complete-app")
+	task := newRepoTask(scope, "complete-app", app.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&task); err != nil {
+		t.Fatalf("CreateTaskWithSteps() error = %v", err)
+	}
+
+	now := time.Now()
+	if err := repo.MarkTaskRunning(task.ID, now); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+
+	if err := repo.CompleteTaskForApp(task.ID, "unsigned.apk", 12, "abc", "signed.apk", 13, "def", now.Add(time.Second)); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
+	}
+
+	foundTask, err := repo.FindByID(task.ID)
+	if err != nil {
+		t.Fatalf("FindByID() task error = %v", err)
+	}
+	if foundTask.Status != model.HardeningTaskStatusCompleted {
+		t.Fatalf("task status = %s, want completed", foundTask.Status)
+	}
+
+	foundApp, err := appRepo.FindByID(app.ID)
+	if err != nil {
+		t.Fatalf("FindByID() app error = %v", err)
+	}
+	if foundApp.Status != model.AppStatusCompleted {
+		t.Fatalf("app status = %s, want completed", foundApp.Status)
+	}
+}
+
+func TestHardeningRepository_FailTaskForAppRollsBackWhenAppUpdateFails(t *testing.T) {
+	repo, appRepo, database, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "fail-rollback")
+	task := newRepoTask(scope, "fail-rollback", app.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&task); err != nil {
+		t.Fatalf("CreateTaskWithSteps() error = %v", err)
+	}
+
+	now := time.Now()
+	if err := repo.MarkTaskRunning(task.ID, now); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	updateErr := errors.New("apps status update failed")
+	registerAppUpdateFailure(t, database, "hardening-fail-task-app-update", updateErr)
+
+	err := repo.FailTaskForApp(task.ID, "engine crashed", now.Add(time.Second))
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("FailTaskForApp() error = %v, want %v", err, updateErr)
+	}
+
+	foundTask, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() task error = %v", findErr)
+	}
+	if foundTask.Status != model.HardeningTaskStatusRunning {
+		t.Fatalf("task status = %s, want running after rollback", foundTask.Status)
+	}
+	if foundTask.ErrorSummary != "" {
+		t.Fatalf("error summary = %q, want empty after rollback", foundTask.ErrorSummary)
+	}
+
+	foundApp, appErr := appRepo.FindByID(app.ID)
+	if appErr != nil {
+		t.Fatalf("FindByID() app error = %v", appErr)
+	}
+	if foundApp.Status != model.AppStatusUnprotected {
+		t.Fatalf("app status = %s, want unprotected after rollback", foundApp.Status)
+	}
+}
+
 func TestHardeningRepository_TransitionStateGuards(t *testing.T) {
 	repo, appRepo, _, scope := setupHardeningRepo(t)
 	app := createRepoApp(t, appRepo, scope, "guards")
@@ -536,12 +626,63 @@ func TestHardeningRepository_ListLogsAndRecoverRunning(t *testing.T) {
 	if recovered.Status != model.HardeningTaskStatusFailed || recovered.ErrorSummary != "服务重启导致任务中断" {
 		t.Fatalf("unexpected recovered task: %+v", recovered)
 	}
+	recoveredApp, err := appRepo.FindByID(running.AppID)
+	if err != nil {
+		t.Fatalf("FindByID() recovered app error = %v", err)
+	}
+	if recoveredApp.Status != model.AppStatusFailed {
+		t.Fatalf("app status = %s, want failed", recoveredApp.Status)
+	}
 	recoveredStep, err := repo.FindStep(running.ID, model.HardeningStepPrepareInput)
 	if err != nil {
 		t.Fatalf("FindStep() recovered step error = %v", err)
 	}
 	if recoveredStep.Status != model.HardeningStepStatusFailed || recoveredStep.ErrorMessage != "服务重启导致任务中断" {
 		t.Fatalf("unexpected recovered step: %+v", recoveredStep)
+	}
+}
+
+func TestHardeningRepository_RecoverRunningTasksRollsBackWhenAppUpdateFails(t *testing.T) {
+	repo, appRepo, database, scope := setupHardeningRepo(t)
+	app := createRepoApp(t, appRepo, scope, "recover-rollback")
+	task := newRepoTask(scope, "recover-rollback", app.ID, model.HardeningTaskStatusRunning)
+	if err := repo.CreateTaskWithSteps(&task); err != nil {
+		t.Fatalf("CreateTaskWithSteps() error = %v", err)
+	}
+
+	now := time.Now()
+	step, err := repo.FindStep(task.ID, model.HardeningStepPrepareInput)
+	if err != nil {
+		t.Fatalf("FindStep() error = %v", err)
+	}
+	if err := repo.StartStep(step.ID, now); err != nil {
+		t.Fatalf("StartStep() error = %v", err)
+	}
+	updateErr := errors.New("apps status update failed")
+	registerAppUpdateFailure(t, database, "hardening-recover-task-app-update", updateErr)
+
+	ids, err := repo.RecoverRunningTasks("服务重启导致任务中断")
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("RecoverRunningTasks() error = %v, want %v", err, updateErr)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("recovered ids = %+v, want none on rollback", ids)
+	}
+
+	foundTask, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() task error = %v", findErr)
+	}
+	if foundTask.Status != model.HardeningTaskStatusRunning {
+		t.Fatalf("task status = %s, want running after rollback", foundTask.Status)
+	}
+
+	foundStep, stepErr := repo.FindStep(task.ID, model.HardeningStepPrepareInput)
+	if stepErr != nil {
+		t.Fatalf("FindStep() recovered step error = %v", stepErr)
+	}
+	if foundStep.Status != model.HardeningStepStatusRunning {
+		t.Fatalf("step status = %s, want running after rollback", foundStep.Status)
 	}
 }
 

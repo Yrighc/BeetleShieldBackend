@@ -21,6 +21,7 @@ import (
 type ObjectStorage interface {
 	GetObjectToFile(ctx context.Context, objectKey string, destinationPath string) error
 	PutObject(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) error
+	DeleteObject(ctx context.Context, objectKey string) error
 }
 
 type HardeningWorkerConfig struct {
@@ -32,26 +33,19 @@ type HardeningWorkerConfig struct {
 }
 
 type HardeningWorker struct {
-	repo             *repository.HardeningRepository
-	appRepo          *repository.AppRepository
-	appStatusUpdater appStatusUpdater
-	storage          ObjectStorage
-	runner           EngineRunner
-	cfg              HardeningWorkerConfig
-}
-
-type appStatusUpdater interface {
-	UpdateStatus(id uint, status model.AppStatus) error
+	repo    *repository.HardeningRepository
+	storage ObjectStorage
+	runner  EngineRunner
+	cfg     HardeningWorkerConfig
 }
 
 func NewHardeningWorker(repo *repository.HardeningRepository, appRepo *repository.AppRepository, storage ObjectStorage, runner EngineRunner, cfg HardeningWorkerConfig) *HardeningWorker {
+	_ = appRepo
 	return &HardeningWorker{
-		repo:             repo,
-		appRepo:          appRepo,
-		appStatusUpdater: appRepo,
-		storage:          storage,
-		runner:           runner,
-		cfg:              cfg,
+		repo:    repo,
+		storage: storage,
+		runner:  runner,
+		cfg:     cfg,
 	}
 }
 
@@ -63,22 +57,7 @@ func (w *HardeningWorker) RecoverRunning(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
-	for _, id := range ids {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		task, findErr := w.repo.FindByID(id)
-		if findErr != nil {
-			return findErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusFailed); err != nil {
-			return err
-		}
-	}
+	_ = ids
 	return nil
 }
 
@@ -97,9 +76,8 @@ func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 
 	if err := w.runTask(ctx, task); err != nil {
 		now := time.Now()
-		markErr := w.repo.MarkTaskFailed(task.ID, err.Error(), now)
-		updateErr := w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusFailed)
-		return true, errors.Join(err, markErr, updateErr)
+		markErr := w.repo.FailTaskForApp(task.ID, err.Error(), now)
+		return true, errors.Join(err, markErr)
 	}
 
 	return true, nil
@@ -145,7 +123,7 @@ func (w *HardeningWorker) reportAsyncError(err error) {
 	log.Printf("hardening worker async error: %v", err)
 }
 
-func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask) error {
+func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask) (err error) {
 	timeout := w.cfg.Timeout
 	if timeout <= 0 {
 		timeout = 60 * time.Minute
@@ -167,6 +145,11 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return err
 	}
+	defer func() {
+		if cleanupErr := os.RemoveAll(workDir); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
 
 	if err := w.runStep(task.ID, model.HardeningStepPrepareInput, func(step *model.HardeningStep) error {
 		if err := w.storage.GetObjectToFile(taskCtx, task.App.ObjectKey, inputPath); err != nil {
@@ -246,25 +229,17 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 	}
 
 	if err := w.runStep(task.ID, model.HardeningStepUploadArtifacts, func(step *model.HardeningStep) error {
-		if err := w.uploadArtifact(taskCtx, unsigned); err != nil {
-			return err
-		}
-		if signed.Path != "" {
-			if err := w.uploadArtifact(taskCtx, signed); err != nil {
-				return err
-			}
-		}
-		return nil
+		return w.uploadArtifacts(taskCtx, unsigned, signed)
 	}); err != nil {
 		return err
 	}
 
 	now := time.Now()
-	if err := w.repo.MarkTaskCompleted(task.ID, unsigned.ObjectKey, unsigned.Size, unsigned.SHA256, signed.ObjectKey, signed.Size, signed.SHA256, now); err != nil {
+	if err := w.repo.CompleteTaskForApp(task.ID, unsigned.ObjectKey, unsigned.Size, unsigned.SHA256, signed.ObjectKey, signed.Size, signed.SHA256, now); err != nil {
 		return err
 	}
 
-	return w.appStatusUpdater.UpdateStatus(task.AppID, model.AppStatusCompleted)
+	return nil
 }
 
 func (w *HardeningWorker) runStep(taskID uint, key model.HardeningStepKey, fn func(*model.HardeningStep) error) error {
@@ -304,6 +279,28 @@ func (w *HardeningWorker) uploadArtifact(ctx context.Context, artifact service.A
 	defer file.Close()
 
 	return w.storage.PutObject(ctx, artifact.ObjectKey, file, artifact.Size, "application/octet-stream")
+}
+
+func (w *HardeningWorker) uploadArtifacts(ctx context.Context, artifacts ...service.ArtifactInfo) error {
+	uploadedKeys := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Path == "" {
+			continue
+		}
+		if err := w.uploadArtifact(ctx, artifact); err != nil {
+			return errors.Join(err, w.rollbackArtifacts(ctx, uploadedKeys))
+		}
+		uploadedKeys = append(uploadedKeys, artifact.ObjectKey)
+	}
+	return nil
+}
+
+func (w *HardeningWorker) rollbackArtifacts(ctx context.Context, objectKeys []string) error {
+	var rollbackErr error
+	for i := len(objectKeys) - 1; i >= 0; i-- {
+		rollbackErr = errors.Join(rollbackErr, w.storage.DeleteObject(ctx, objectKeys[i]))
+	}
+	return rollbackErr
 }
 
 func artifactObjectKey(task *model.HardeningTask, kind string, ext string) string {

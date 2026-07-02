@@ -27,6 +27,8 @@ type fakeWorkerStorage struct {
 	putErr       error
 	putFailAfter int
 	putCalls     int
+	deleteErr    error
+	deleteCalls  []string
 	getObjectErr error
 }
 
@@ -51,6 +53,15 @@ func (s *fakeWorkerStorage) PutObject(ctx context.Context, objectKey string, rea
 		return err
 	}
 	s.objects[objectKey] = buf.Bytes()
+	return nil
+}
+
+func (s *fakeWorkerStorage) DeleteObject(ctx context.Context, objectKey string) error {
+	s.deleteCalls = append(s.deleteCalls, objectKey)
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	delete(s.objects, objectKey)
 	return nil
 }
 
@@ -91,21 +102,6 @@ func (r *fakeEngineRunner) Run(ctx context.Context, req EngineRunRequest, onLine
 		}
 	}
 	return r.err
-}
-
-type fakeAppStatusUpdater struct {
-	err   error
-	calls []appStatusUpdateCall
-}
-
-type appStatusUpdateCall struct {
-	id     uint
-	status model.AppStatus
-}
-
-func (f *fakeAppStatusUpdater) UpdateStatus(id uint, status model.AppStatus) error {
-	f.calls = append(f.calls, appStatusUpdateCall{id: id, status: status})
-	return f.err
 }
 
 type workerTestScope struct {
@@ -166,6 +162,22 @@ func setupWorkerTest(t *testing.T) (*gorm.DB, *HardeningWorker, *repository.Hard
 		Timeout:         time.Minute,
 	})
 	return database, w, repo, appRepo, storage, runner, scope
+}
+
+func registerWorkerAppUpdateFailure(t *testing.T, database *gorm.DB, name string, err error) {
+	t.Helper()
+	if regErr := database.Callback().Update().Before("gorm:update").Register(name, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "apps" {
+			tx.AddError(err)
+		}
+	}); regErr != nil {
+		t.Fatalf("register update callback: %v", regErr)
+	}
+	t.Cleanup(func() {
+		if removeErr := database.Callback().Update().Remove(name); removeErr != nil {
+			t.Fatalf("remove update callback: %v", removeErr)
+		}
+	})
 }
 
 func newWorkerTestScope(t *testing.T) workerTestScope {
@@ -360,25 +372,20 @@ func TestHardeningWorker_ProcessNextReturnsMarkFailedErrorAfterRunFailure(t *tes
 	if appErr != nil {
 		t.Fatalf("FindByID(app) error = %v", appErr)
 	}
-	if app.Status != model.AppStatusFailed {
-		t.Fatalf("app status = %s, want failed", app.Status)
+	if app.Status != model.AppStatusProcessing {
+		t.Fatalf("app status = %s, want processing after rollback", app.Status)
 	}
 }
 
-func TestHardeningWorker_ProcessNextReturnsAppStatusErrorAfterRunFailure(t *testing.T) {
-	database, w, repo, appRepo, storage, runner, scope := setupWorkerTest(t)
-	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "app-status-error")
-	runErr := errors.New("engine crashed")
-	updateErr := errors.New("status persistence failed")
-	runner.err = runErr
-	w.appStatusUpdater = &fakeAppStatusUpdater{err: updateErr}
+func TestHardeningWorker_ProcessNextSuccessDoesNotDriftWhenCompletionTransitionFails(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "completion-rollback")
+	updateErr := errors.New("apps status update failed")
+	registerWorkerAppUpdateFailure(t, database, "worker-complete-app-update", updateErr)
 
 	processed, err := w.ProcessNext(context.Background())
 	if !processed {
 		t.Fatal("processed = false, want true")
-	}
-	if !errors.Is(err, runErr) {
-		t.Fatalf("ProcessNext() error = %v, want %v", err, runErr)
 	}
 	if !errors.Is(err, updateErr) {
 		t.Fatalf("ProcessNext() error = %v, want %v", err, updateErr)
@@ -388,16 +395,19 @@ func TestHardeningWorker_ProcessNextReturnsAppStatusErrorAfterRunFailure(t *test
 	if findErr != nil {
 		t.Fatalf("FindByID() error = %v", findErr)
 	}
-	if found.Status != model.HardeningTaskStatusFailed {
-		t.Fatalf("task status = %s, want failed", found.Status)
+	if found.Status != model.HardeningTaskStatusRunning {
+		t.Fatalf("task status = %s, want running after rollback", found.Status)
+	}
+	if found.UnsignedObjectKey != "" || found.SignedTestObjectKey != "" {
+		t.Fatalf("artifact keys should not persist when completion rolls back: %+v", found)
 	}
 
-	app, appErr := appRepo.FindByID(found.AppID)
+	app, appErr := appRepo.FindByID(task.AppID)
 	if appErr != nil {
 		t.Fatalf("FindByID(app) error = %v", appErr)
 	}
 	if app.Status != model.AppStatusProcessing {
-		t.Fatalf("app status = %s, want processing when update fails", app.Status)
+		t.Fatalf("app status = %s, want processing after rollback", app.Status)
 	}
 }
 
@@ -476,11 +486,15 @@ func TestHardeningWorker_ProcessNextUploadFailureMarksTaskAndAppFailed(t *testin
 	if found.UnsignedObjectKey != "" || found.SignedTestObjectKey != "" {
 		t.Fatalf("artifact keys should not be persisted on failure: %+v", found)
 	}
-	if _, ok := storage.objects[artifactObjectKey(found, "unsigned", ".apk")]; !ok {
-		t.Fatal("expected unsigned artifact upload before failure")
+	unsignedObjectKey := artifactObjectKey(found, "unsigned", ".apk")
+	if _, ok := storage.objects[unsignedObjectKey]; ok {
+		t.Fatal("expected unsigned artifact rollback after signed upload failure")
 	}
 	if _, ok := storage.objects[artifactObjectKey(found, "signed_test", ".apk")]; ok {
 		t.Fatal("signed artifact should not upload after failure")
+	}
+	if len(storage.deleteCalls) != 1 || storage.deleteCalls[0] != unsignedObjectKey {
+		t.Fatalf("delete calls = %+v, want [%s]", storage.deleteCalls, unsignedObjectKey)
 	}
 
 	app, appErr := appRepo.FindByID(found.AppID)
@@ -533,6 +547,26 @@ func TestHardeningWorker_ProcessNextContextCancellationMarksTaskAndAppFailed(t *
 	}
 	if app.Status != model.AppStatusFailed {
 		t.Fatalf("app status = %s, want failed", app.Status)
+	}
+}
+
+func TestHardeningWorker_ProcessNextRemovesTaskWorkDir(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	workRoot := t.TempDir()
+	w.cfg.WorkDir = workRoot
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "cleanup-workdir")
+
+	processed, err := w.ProcessNext(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessNext() error = %v", err)
+	}
+	if !processed {
+		t.Fatal("processed = false, want true")
+	}
+
+	workDir := filepath.Join(workRoot, task.TaskNo)
+	if _, statErr := os.Stat(workDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("work dir stat error = %v, want %v", statErr, os.ErrNotExist)
 	}
 }
 
@@ -596,17 +630,26 @@ func TestHardeningWorker_RecoverRunningHonorsCanceledContext(t *testing.T) {
 	}
 }
 
-func TestHardeningWorker_RecoverRunningReturnsErrorWhenAppStatusUpdateFails(t *testing.T) {
+func TestHardeningWorker_RecoverRunningReturnsErrorWithoutDriftWhenAppUpdateFails(t *testing.T) {
 	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
-	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "recover-missing-app")
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "recover-rollback")
 	if err := repo.MarkTaskRunning(task.ID, time.Now()); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	w.appStatusUpdater = &fakeAppStatusUpdater{err: gorm.ErrRecordNotFound}
+	updateErr := errors.New("apps status update failed")
+	registerWorkerAppUpdateFailure(t, database, "worker-recover-app-update", updateErr)
 
 	err := w.RecoverRunning(context.Background())
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("RecoverRunning() error = %v, want %v", err, gorm.ErrRecordNotFound)
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("RecoverRunning() error = %v, want %v", err, updateErr)
+	}
+
+	found, findErr := repo.FindByID(task.ID)
+	if findErr != nil {
+		t.Fatalf("FindByID() error = %v", findErr)
+	}
+	if found.Status != model.HardeningTaskStatusRunning {
+		t.Fatalf("task status = %s, want running after rollback", found.Status)
 	}
 }
 
@@ -616,9 +659,9 @@ func TestHardeningWorker_StartReportsRecoverRunningError(t *testing.T) {
 	if err := repo.MarkTaskRunning(task.ID, time.Now()); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
+	updateErr := errors.New("apps status update failed")
+	registerWorkerAppUpdateFailure(t, database, "worker-start-recover-app-update", updateErr)
 
-	reportErr := errors.New("recover status persistence failed")
-	w.appStatusUpdater = &fakeAppStatusUpdater{err: reportErr}
 	errs := make(chan error, 1)
 	w.cfg.OnError = func(err error) {
 		errs <- err
@@ -629,8 +672,8 @@ func TestHardeningWorker_StartReportsRecoverRunningError(t *testing.T) {
 	w.Start(ctx, 10*time.Millisecond)
 
 	err := waitForWorkerError(t, errs)
-	if !errors.Is(err, reportErr) {
-		t.Fatalf("reported error = %v, want %v", err, reportErr)
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("reported error = %v, want %v", err, updateErr)
 	}
 }
 
