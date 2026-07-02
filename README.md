@@ -72,8 +72,25 @@ All endpoints are under `/api/v1`, return `{code, message, data}`, and (except
 - `GET /apps/:id` — detail
 - `DELETE /apps/:id` — delete
 - `GET /apps/:id/download-url` — presigned MinIO download URL (15 min expiry)
+- `POST /hardening-tasks` — create a queued hardening task for an existing app (`admin`/`developer`)
+- `GET /hardening-tasks?status=&appId=&search=&page=&pageSize=` — list hardening tasks
+- `GET /hardening-tasks/:id` — task detail with steps and recent logs
+- `GET /hardening-tasks/:id/logs?stepKey=&afterId=&limit=` — task logs
+- `GET /hardening-tasks/:id/download-url?artifact=unsigned|signed_test` — presigned artifact download URL
+- `GET /apps/:id/hardening-history` — recent hardening history for an app
 
 See `scripts/smoke_test.sh` for a runnable example of the full flow.
+
+## Manual hardening smoke test
+
+The default test suite does not run `dpt.jar`. To test the real engine locally:
+
+1. Ensure `.env` points `DPT_JAR_PATH` at `/Users/yrighc/work/hzyz/project/test/dpt-shell/executable/dpt.jar`.
+2. Upload an APK through `POST /apps/upload`.
+3. Create a hardening task with `POST /hardening-tasks`.
+4. Poll `GET /hardening-tasks/:id` until the task is `completed` or `failed`.
+5. Download the unsigned artifact with `GET /hardening-tasks/:id/download-url?artifact=unsigned`.
+6. Optionally download the test signed artifact with `artifact=signed_test` if present.
 
 ## What's not in this sub-project
 

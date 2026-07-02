@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"time"
 
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/db"
@@ -11,6 +12,7 @@ import (
 	"beetleshield-backend/internal/repository"
 	"beetleshield-backend/internal/router"
 	"beetleshield-backend/internal/service"
+	"beetleshield-backend/internal/worker"
 )
 
 func main() {
@@ -64,6 +66,19 @@ func main() {
 		cfg.DPTDefaultVMPRules,
 	)
 	hardeningHandler := handler.NewHardeningHandler(hardeningService)
+	hardeningWorker := worker.NewHardeningWorker(
+		hardeningRepo,
+		appRepo,
+		storageClient,
+		worker.DPTRunner{},
+		worker.HardeningWorkerConfig{
+			JarPath:         cfg.DPTJarPath,
+			WorkDir:         cfg.DPTWorkDir,
+			DefaultVMPRules: cfg.DPTDefaultVMPRules,
+			Timeout:         time.Duration(cfg.DPTTaskTimeoutMinutes) * time.Minute,
+		},
+	)
+	hardeningWorker.Start(context.Background(), 3*time.Second)
 
 	r := router.New(router.Deps{
 		JWTSecret:        cfg.JWTSecret,
