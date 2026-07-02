@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,10 +135,14 @@ func (w *HardeningWorker) Start(ctx context.Context, interval time.Duration) {
 }
 
 func (w *HardeningWorker) reportAsyncError(err error) {
-	if err == nil || w.cfg.OnError == nil {
+	if err == nil {
 		return
 	}
-	w.cfg.OnError(err)
+	if w.cfg.OnError != nil {
+		w.cfg.OnError(err)
+		return
+	}
+	log.Printf("hardening worker async error: %v", err)
 }
 
 func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask) error {

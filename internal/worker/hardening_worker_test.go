@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -650,6 +651,31 @@ func TestHardeningWorker_StartReportsProcessNextError(t *testing.T) {
 	err := waitForWorkerError(t, errs)
 	if !errors.Is(err, runner.err) {
 		t.Fatalf("reported error = %v, want %v", err, runner.err)
+	}
+}
+
+func TestHardeningWorker_ReportAsyncErrorLogsWithoutOnErrorHook(t *testing.T) {
+	_, w, _, _, _, _, _ := setupWorkerTest(t)
+
+	var logBuf bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	originalPrefix := log.Prefix()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+		log.SetPrefix(originalPrefix)
+	})
+
+	reportErr := errors.New("default async error path")
+	w.reportAsyncError(reportErr)
+
+	got := logBuf.String()
+	if !strings.Contains(got, reportErr.Error()) {
+		t.Fatalf("log output = %q, want substring %q", got, reportErr.Error())
 	}
 }
 
