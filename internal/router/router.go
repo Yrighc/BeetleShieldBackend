@@ -15,6 +15,7 @@ type Deps struct {
 	UserHandler      *handler.UserHandler
 	StrategyHandler  *handler.StrategyHandler
 	HardeningHandler *handler.HardeningHandler
+	AuditHandler     *handler.AuditHandler
 }
 
 func New(deps Deps) *gin.Engine {
@@ -71,6 +72,12 @@ func New(deps Deps) *gin.Engine {
 			hardeningTasks.GET("/:id", deps.HardeningHandler.Get)
 			hardeningTasks.GET("/:id/logs", deps.HardeningHandler.Logs)
 			hardeningTasks.GET("/:id/download-url", deps.HardeningHandler.DownloadURL)
+		}
+
+		auditLogs := v1.Group("/audit-logs")
+		auditLogs.Use(middleware.JWTAuth(deps.JWTSecret))
+		{
+			auditLogs.GET("", deps.AuditHandler.List)
 		}
 	}
 

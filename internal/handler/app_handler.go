@@ -50,6 +50,7 @@ func (h *AppHandler) Upload(c *gin.Context) {
 		ManualPackageName: c.PostForm("packageName"),
 		ManualVersion:     c.PostForm("version"),
 		UploadedBy:        userID,
+		IP:                c.ClientIP(),
 	}
 
 	app, err := h.appService.Upload(c.Request.Context(), input)
@@ -117,7 +118,7 @@ func (h *AppHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if err := h.appService.Delete(c.Request.Context(), uint(id)); err != nil {
+	if err := h.appService.Delete(c.Request.Context(), uint(id), c.GetUint(middleware.ContextUserIDKey), c.ClientIP()); err != nil {
 		switch {
 		case errors.Is(err, service.ErrAppNotFound):
 			response.Error(c, http.StatusNotFound, 40402, "应用不存在")

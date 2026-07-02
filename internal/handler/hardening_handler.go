@@ -46,6 +46,7 @@ func (h *HardeningHandler) Create(c *gin.Context) {
 		EnableFileIntegrityCheck: req.EnableFileIntegrityCheck,
 		EnableProxyDetect:        req.EnableProxyDetect,
 		CreatedBy:                c.GetUint(middleware.ContextUserIDKey),
+		IP:                       c.ClientIP(),
 	})
 	if err != nil {
 		switch {

@@ -71,10 +71,11 @@ var validSoShells = map[model.SoShellType]bool{
 
 type StrategyService struct {
 	strategyRepo *repository.StrategyRepository
+	auditService *AuditService
 }
 
-func NewStrategyService(strategyRepo *repository.StrategyRepository) *StrategyService {
-	return &StrategyService{strategyRepo: strategyRepo}
+func NewStrategyService(strategyRepo *repository.StrategyRepository, auditService *AuditService) *StrategyService {
+	return &StrategyService{strategyRepo: strategyRepo, auditService: auditService}
 }
 
 func (s *StrategyService) Templates() map[string]model.Strategy {
@@ -93,7 +94,7 @@ func (s *StrategyService) GetCurrent() (*model.Strategy, error) {
 	return current, nil
 }
 
-func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint) (*model.Strategy, error) {
+func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint, ip string) (*model.Strategy, error) {
 	if !validDexLevels[input.DexLevel] {
 		return nil, ErrInvalidDexLevel
 	}
@@ -114,5 +115,20 @@ func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint) (*model.
 	if err := s.strategyRepo.Save(strategy); err != nil {
 		return nil, err
 	}
+	s.recordAudit(RecordAuditInput{
+		ActorUserID: updatedBy,
+		Action:      model.AuditActionStrategySave,
+		TargetType:  "strategy",
+		TargetID:    strategy.ID,
+		Detail:      "全局加固策略已更新",
+		IP:          ip,
+		Success:     true,
+	})
 	return strategy, nil
+}
+
+func (s *StrategyService) recordAudit(input RecordAuditInput) {
+	if s.auditService != nil {
+		s.auditService.Record(input)
+	}
 }

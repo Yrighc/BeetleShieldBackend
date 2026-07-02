@@ -106,13 +106,14 @@ func setupHardeningServiceTest(t *testing.T) (*service.HardeningService, *reposi
 	appRepo := repository.NewAppRepository(database)
 	hardeningRepo := repository.NewHardeningRepository(database)
 	strategyRepo := repository.NewStrategyRepository(database)
-	strategySvc := service.NewStrategyService(strategyRepo)
+	strategySvc := service.NewStrategyService(strategyRepo, nil)
 	svc := service.NewHardeningService(
 		hardeningRepo,
 		appRepo,
 		strategySvc,
 		fakeHardeningURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		nil,
 	)
 	return svc, appRepo, hardeningRepo, scope
 }

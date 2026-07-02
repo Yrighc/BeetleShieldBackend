@@ -76,11 +76,13 @@ func (h *UserHandler) Create(c *gin.Context) {
 	}
 
 	user, err := h.userService.Create(service.CreateUserInput{
-		Name:       req.Name,
-		Email:      req.Email,
-		Password:   req.Password,
-		Role:       req.Role,
-		Department: req.Department,
+		Name:        req.Name,
+		Email:       req.Email,
+		Password:    req.Password,
+		Role:        req.Role,
+		Department:  req.Department,
+		ActorUserID: c.GetUint(middleware.ContextUserIDKey),
+		IP:          c.ClientIP(),
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrEmailAlreadyExists) {
@@ -121,7 +123,7 @@ func (h *UserHandler) Update(c *gin.Context) {
 		Name:       req.Name,
 		Department: req.Department,
 		Role:       req.Role,
-	})
+	}, c.GetUint(middleware.ContextUserIDKey), c.ClientIP())
 	if err != nil {
 		if errors.Is(err, service.ErrUserNotFound) {
 			response.Error(c, http.StatusNotFound, 40403, "用户不存在")
@@ -157,7 +159,7 @@ func (h *UserHandler) UpdateStatus(c *gin.Context) {
 
 	currentUserID := c.GetUint(middleware.ContextUserIDKey)
 
-	if err := h.userService.UpdateStatus(uint(id), req.Status, currentUserID); err != nil {
+	if err := h.userService.UpdateStatus(uint(id), req.Status, currentUserID, c.ClientIP()); err != nil {
 		switch {
 		case errors.Is(err, service.ErrUserNotFound):
 			response.Error(c, http.StatusNotFound, 40403, "用户不存在")

@@ -146,16 +146,16 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		}
 	}
 
-	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours)
-	adminToken, _, err := authSvc.Login(users[0].Email, "Password123!")
+	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, nil)
+	adminToken, _, err := authSvc.Login(users[0].Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("admin Login() error = %v", err)
 	}
-	developerToken, _, err := authSvc.Login(users[1].Email, "Password123!")
+	developerToken, _, err := authSvc.Login(users[1].Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("developer Login() error = %v", err)
 	}
-	auditorToken, _, err := authSvc.Login(users[2].Email, "Password123!")
+	auditorToken, _, err := authSvc.Login(users[2].Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("auditor Login() error = %v", err)
 	}
@@ -176,7 +176,7 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		t.Fatalf("create app: %v", err)
 	}
 
-	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database))
+	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), nil)
 	hardeningRepo := repository.NewHardeningRepository(database)
 	hardeningSvc := service.NewHardeningService(
 		hardeningRepo,
@@ -184,6 +184,7 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		strategySvc,
 		fakeHardeningHandlerURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		nil,
 	)
 	hardeningHandler := handler.NewHardeningHandler(hardeningSvc)
 

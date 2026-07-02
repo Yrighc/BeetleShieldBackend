@@ -34,6 +34,7 @@ type UploadInput struct {
 	ManualPackageName string
 	ManualVersion     string
 	UploadedBy        uint
+	IP                string
 }
 
 type AppService struct {
@@ -41,10 +42,11 @@ type AppService struct {
 	hardeningRepo   *repository.HardeningRepository
 	storage         *storage.MinioStorage
 	maxUploadSizeMB int64
+	auditService    *AuditService
 }
 
-func NewAppService(appRepo *repository.AppRepository, hardeningRepo *repository.HardeningRepository, storage *storage.MinioStorage, maxUploadSizeMB int64) *AppService {
-	return &AppService{appRepo: appRepo, hardeningRepo: hardeningRepo, storage: storage, maxUploadSizeMB: maxUploadSizeMB}
+func NewAppService(appRepo *repository.AppRepository, hardeningRepo *repository.HardeningRepository, storage *storage.MinioStorage, maxUploadSizeMB int64, auditService *AuditService) *AppService {
+	return &AppService{appRepo: appRepo, hardeningRepo: hardeningRepo, storage: storage, maxUploadSizeMB: maxUploadSizeMB, auditService: auditService}
 }
 
 // Upload 是一个处理应用文件上传的方法
@@ -156,6 +158,16 @@ func (s *AppService) Upload(ctx context.Context, input UploadInput) (*model.App,
 		return nil, fmt.Errorf("save app record: %w", err)
 	}
 
+	s.recordAudit(RecordAuditInput{
+		ActorUserID: input.UploadedBy,
+		Action:      model.AuditActionAppUpload,
+		TargetType:  "app",
+		TargetID:    app.ID,
+		Detail:      app.Name + " (" + app.PackageName + ")",
+		IP:          input.IP,
+		Success:     true,
+	})
+
 	// 返回创建的应用记录
 	return app, nil
 }
@@ -172,7 +184,7 @@ func (s *AppService) Get(id uint) (*model.App, error) {
 	return app, nil
 }
 
-func (s *AppService) Delete(ctx context.Context, id uint) error {
+func (s *AppService) Delete(ctx context.Context, id uint, actorUserID uint, ip string) error {
 	app, err := s.appRepo.FindByID(id)
 	if err != nil {
 		return ErrAppNotFound
@@ -190,6 +202,15 @@ func (s *AppService) Delete(ctx context.Context, id uint) error {
 		return fmt.Errorf("delete app record: %w", err)
 	}
 	_ = s.storage.DeleteObject(ctx, app.ObjectKey)
+	s.recordAudit(RecordAuditInput{
+		ActorUserID: actorUserID,
+		Action:      model.AuditActionAppDelete,
+		TargetType:  "app",
+		TargetID:    app.ID,
+		Detail:      app.Name + " (" + app.PackageName + ")",
+		IP:          ip,
+		Success:     true,
+	})
 	return nil
 }
 
@@ -199,4 +220,10 @@ func (s *AppService) DownloadURL(ctx context.Context, id uint) (string, error) {
 		return "", ErrAppNotFound
 	}
 	return s.storage.PresignedDownloadURL(ctx, app.ObjectKey, 15*time.Minute)
+}
+
+func (s *AppService) recordAudit(input RecordAuditInput) {
+	if s.auditService != nil {
+		s.auditService.Record(input)
+	}
 }

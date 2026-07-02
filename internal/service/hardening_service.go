@@ -32,6 +32,7 @@ type CreateHardeningTaskInput struct {
 	EnableFileIntegrityCheck bool
 	EnableProxyDetect        bool
 	CreatedBy                uint
+	IP                       string
 }
 
 type HardeningTaskDetail struct {
@@ -46,6 +47,7 @@ type HardeningService struct {
 	strategyService *StrategyService
 	storage         DownloadURLProvider
 	defaultVMPRules string
+	auditService    *AuditService
 }
 
 func NewHardeningService(
@@ -54,6 +56,7 @@ func NewHardeningService(
 	strategyService *StrategyService,
 	storage DownloadURLProvider,
 	defaultVMPRules string,
+	auditService *AuditService,
 ) *HardeningService {
 	return &HardeningService{
 		hardeningRepo:   hardeningRepo,
@@ -61,6 +64,7 @@ func NewHardeningService(
 		strategyService: strategyService,
 		storage:         storage,
 		defaultVMPRules: defaultVMPRules,
+		auditService:    auditService,
 	}
 }
 
@@ -113,6 +117,15 @@ func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTask
 		return nil, err
 	}
 
+	s.recordAudit(RecordAuditInput{
+		ActorUserID: input.CreatedBy,
+		Action:      model.AuditActionHardeningCreate,
+		TargetType:  "hardening_task",
+		TargetID:    task.ID,
+		Detail:      app.Name + " / " + task.TaskNo,
+		IP:          input.IP,
+		Success:     true,
+	})
 	return s.Get(task.ID)
 }
 
@@ -192,4 +205,10 @@ func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifac
 
 func generateHardeningTaskNo(now time.Time) string {
 	return fmt.Sprintf("TASK-%s-%d", now.Format("20060102"), now.UnixNano())
+}
+
+func (s *HardeningService) recordAudit(input RecordAuditInput) {
+	if s.auditService != nil {
+		s.auditService.Record(input)
+	}
 }

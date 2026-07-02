@@ -31,7 +31,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	token, user, err := h.authService.Login(req.Email, req.Password)
+	token, user, err := h.authService.Login(req.Email, req.Password, c.ClientIP())
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
 			response.Error(c, http.StatusUnauthorized, 40102, "邮箱或密码错误")
