@@ -39,6 +39,18 @@ type HardeningWorker struct {
 	cfg     HardeningWorkerConfig
 }
 
+type terminalPersistenceError struct {
+	err error
+}
+
+func (e terminalPersistenceError) Error() string {
+	return e.err.Error()
+}
+
+func (e terminalPersistenceError) Unwrap() error {
+	return e.err
+}
+
 func NewHardeningWorker(repo *repository.HardeningRepository, appRepo *repository.AppRepository, storage ObjectStorage, runner EngineRunner, cfg HardeningWorkerConfig) *HardeningWorker {
 	_ = appRepo
 	return &HardeningWorker{
@@ -75,6 +87,10 @@ func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 	}
 
 	if err := w.runTask(ctx, task); err != nil {
+		var terminalErr terminalPersistenceError
+		if errors.As(err, &terminalErr) {
+			return true, err
+		}
 		now := time.Now()
 		markErr := w.repo.FailTaskForApp(task.ID, err.Error(), now)
 		return true, errors.Join(err, markErr)
@@ -244,7 +260,7 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 
 	now := time.Now()
 	if err := w.repo.CompleteTaskForApp(task.ID, unsigned.ObjectKey, unsigned.Size, unsigned.SHA256, signed.ObjectKey, signed.Size, signed.SHA256, now); err != nil {
-		return err
+		return terminalPersistenceError{err: err}
 	}
 
 	return nil

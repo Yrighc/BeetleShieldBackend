@@ -190,6 +190,24 @@ func registerWorkerAppUpdateFailure(t *testing.T, database *gorm.DB, name string
 	})
 }
 
+func registerWorkerAppUpdateFailureOnce(t *testing.T, database *gorm.DB, name string, err error) {
+	t.Helper()
+	failed := false
+	if regErr := database.Callback().Update().Before("gorm:update").Register(name, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "apps" && !failed {
+			failed = true
+			tx.AddError(err)
+		}
+	}); regErr != nil {
+		t.Fatalf("register update callback: %v", regErr)
+	}
+	t.Cleanup(func() {
+		if removeErr := database.Callback().Update().Remove(name); removeErr != nil {
+			t.Fatalf("remove update callback: %v", removeErr)
+		}
+	})
+}
+
 func newWorkerTestScope(t *testing.T) workerTestScope {
 	t.Helper()
 	namespace := fmt.Sprintf("%07x-%x", checksumString(t.Name()), time.Now().UnixNano())
@@ -391,7 +409,7 @@ func TestHardeningWorker_ProcessNextSuccessDoesNotDriftWhenCompletionTransitionF
 	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
 	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "completion-rollback")
 	updateErr := errors.New("apps status update failed")
-	registerWorkerAppUpdateFailure(t, database, "worker-complete-app-update", updateErr)
+	registerWorkerAppUpdateFailureOnce(t, database, "worker-complete-app-update", updateErr)
 
 	processed, err := w.ProcessNext(context.Background())
 	if !processed {
@@ -569,7 +587,7 @@ func TestHardeningWorker_ProcessNextCompletionFailureRollsBackUploadedArtifacts(
 	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
 	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "completion-artifact-rollback")
 	updateErr := errors.New("apps status update failed")
-	registerWorkerAppUpdateFailure(t, database, "worker-complete-artifact-rollback", updateErr)
+	registerWorkerAppUpdateFailureOnce(t, database, "worker-complete-artifact-rollback", updateErr)
 
 	processed, err := w.ProcessNext(context.Background())
 	if !processed {
