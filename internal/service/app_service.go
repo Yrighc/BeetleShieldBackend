@@ -123,8 +123,11 @@ func (s *AppService) Upload(ctx context.Context, input UploadInput) (*model.App,
 		return nil, fmt.Errorf("seek temp file: %w", err)
 	}
 
-	// 设置文件内容类型
-	contentType := "application/vnd.android.package-archive"
+	// 设置文件内容类型：.apk 使用标准 APK MIME 类型，.aab 没有广泛注册的标准类型，使用通用二进制类型
+	contentType := "application/octet-stream"
+	if ext == ".apk" {
+		contentType = "application/vnd.android.package-archive"
+	}
 	// 将文件上传到存储系统
 	if err := s.storage.PutObject(ctx, objectKey, tmpFile, input.FileHeader.Size, contentType); err != nil {
 		return nil, fmt.Errorf("upload to storage: %w", err)
@@ -172,10 +175,11 @@ func (s *AppService) Delete(ctx context.Context, id uint) error {
 	if err != nil {
 		return ErrAppNotFound
 	}
-	if err := s.storage.DeleteObject(ctx, app.ObjectKey); err != nil {
-		return fmt.Errorf("delete storage object: %w", err)
+	if err := s.appRepo.Delete(id); err != nil {
+		return fmt.Errorf("delete app record: %w", err)
 	}
-	return s.appRepo.Delete(id)
+	_ = s.storage.DeleteObject(ctx, app.ObjectKey)
+	return nil
 }
 
 func (s *AppService) DownloadURL(ctx context.Context, id uint) (string, error) {
