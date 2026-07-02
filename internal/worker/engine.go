@@ -50,9 +50,16 @@ func (DPTRunner) Run(ctx context.Context, req EngineRunRequest, onLine func(mode
 	go scanEngineLines(stdout, model.HardeningLogLevelInfo, onLine, &wg, errCh)
 	go scanEngineLines(stderr, model.HardeningLogLevelError, onLine, &wg, errCh)
 
-	waitErr := cmd.Wait()
+	// The stdout/stderr pipes must be fully drained before calling cmd.Wait():
+	// Wait closes them as soon as it sees the process exit, and racing that
+	// close against the scanning goroutines' still-in-flight Read calls
+	// produces an intermittent "read |0: file already closed" error instead
+	// of a clean EOF. Draining first is safe here because the pipes reach
+	// EOF on their own once the child process exits and closes its ends,
+	// independent of when the parent calls Wait.
 	wg.Wait()
 	close(errCh)
+	waitErr := cmd.Wait()
 
 	var scanErr error
 	for err := range errCh {
