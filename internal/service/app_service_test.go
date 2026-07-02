@@ -141,7 +141,7 @@ func TestAppService_Upload_ManualPackageInfo(t *testing.T) {
 		t.Errorf("Get() returned different app")
 	}
 
-	downloadURL, err := svc.DownloadURL(ctx, app.ID)
+	downloadURL, err := svc.DownloadURL(ctx, app.ID, 0, "")
 	if err != nil {
 		t.Fatalf("DownloadURL() error = %v", err)
 	}
@@ -270,5 +270,45 @@ func TestAppService_DeleteRecordsAuditEntry(t *testing.T) {
 	}
 	if total != 1 || len(logs) != 1 || logs[0].TargetID != app.ID || logs[0].TargetType != "app" || !logs[0].Success {
 		t.Fatalf("unexpected app delete audit rows len=%d total=%d rows=%+v", len(logs), total, logs)
+	}
+}
+
+func TestAppService_DownloadURLRecordsAuditEntry(t *testing.T) {
+	svc, auditService, marker, actorID := setupAppServiceWithAudit(t)
+	ctx := context.Background()
+	fh := buildFileHeader(t, "file", "audit-download.aab", []byte("audit download bytes"))
+
+	app, err := svc.Upload(ctx, service.UploadInput{
+		FileHeader:        fh,
+		Tag:               model.AppTagTool,
+		ManualPackageName: "com.svcaudittest.download",
+		ManualVersion:     "1.0.0",
+		UploadedBy:        actorID,
+		IP:                marker,
+	})
+	if err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Delete(ctx, app.ID, actorID, marker) })
+
+	downloadURL, err := svc.DownloadURL(ctx, app.ID, actorID, marker)
+	if err != nil {
+		t.Fatalf("DownloadURL() error = %v", err)
+	}
+	if downloadURL == "" {
+		t.Fatal("expected non-empty download URL")
+	}
+
+	logs, total, err := auditService.List(repository.AuditListFilter{
+		ActorUserID: actorID,
+		Action:      string(model.AuditActionAppDownload),
+		Page:        1,
+		PageSize:    10,
+	})
+	if err != nil {
+		t.Fatalf("audit List() error = %v", err)
+	}
+	if total != 1 || len(logs) != 1 || logs[0].TargetID != app.ID || logs[0].TargetType != "app" || !logs[0].Success {
+		t.Fatalf("unexpected app download audit rows len=%d total=%d rows=%+v", len(logs), total, logs)
 	}
 }

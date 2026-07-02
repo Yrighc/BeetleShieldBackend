@@ -140,7 +140,7 @@ func (h *HardeningHandler) DownloadURL(c *gin.Context) {
 		return
 	}
 
-	url, err := h.svc.DownloadURL(c.Request.Context(), id, c.Query("artifact"))
+	url, err := h.svc.DownloadURL(c.Request.Context(), id, c.Query("artifact"), c.GetUint(middleware.ContextUserIDKey), c.ClientIP())
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrHardeningTaskNotFound):

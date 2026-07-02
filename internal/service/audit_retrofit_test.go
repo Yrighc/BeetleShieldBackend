@@ -163,3 +163,52 @@ func TestHardeningService_CreateRecordsAuditEntry(t *testing.T) {
 		t.Fatalf("unexpected hardening audit logs: %+v", logs)
 	}
 }
+
+func TestHardeningService_DownloadURLRecordsAuditEntry(t *testing.T) {
+	database, auditService, marker, actorID := setupAuditRetrofitDB(t, "hardening-download-audit")
+	scope := newHardeningServiceTestScope()
+	cleanupHardeningServiceTestData(t, database, scope)
+	t.Cleanup(func() { cleanupHardeningServiceTestData(t, database, scope) })
+
+	appRepo := repository.NewAppRepository(database)
+	hardeningRepo := repository.NewHardeningRepository(database)
+	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), nil)
+	svc := service.NewHardeningService(
+		hardeningRepo,
+		appRepo,
+		strategySvc,
+		fakeHardeningURLStorage{},
+		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		auditService,
+	)
+	app := createHardeningServiceApp(t, appRepo, scope, "download-audit")
+
+	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{
+		AppID:     app.ID,
+		CreatedBy: actorID,
+		IP:        marker,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	now := time.Now()
+	if err := hardeningRepo.MarkTaskRunning(detail.Task.ID, now); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	if err := hardeningRepo.CompleteTaskForApp(detail.Task.ID, "hardening/unsigned-download.apk", 10, "abc", "", 0, "", now); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
+	}
+
+	downloadURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "unsigned", actorID, marker)
+	if err != nil {
+		t.Fatalf("DownloadURL() error = %v", err)
+	}
+	if downloadURL == "" {
+		t.Fatal("expected non-empty download URL")
+	}
+
+	logs := findAuditLogs(t, auditService, actorID, model.AuditActionHardeningDownload)
+	if len(logs) != 1 || logs[0].TargetType != "hardening_task" || logs[0].TargetID != detail.Task.ID || logs[0].Detail != app.Name+" / "+detail.Task.TaskNo+" / unsigned" {
+		t.Fatalf("unexpected hardening download audit logs: %+v", logs)
+	}
+}

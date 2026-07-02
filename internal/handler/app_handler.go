@@ -140,7 +140,7 @@ func (h *AppHandler) DownloadURL(c *gin.Context) {
 		return
 	}
 
-	downloadURL, err := h.appService.DownloadURL(c.Request.Context(), uint(id))
+	downloadURL, err := h.appService.DownloadURL(c.Request.Context(), uint(id), c.GetUint(middleware.ContextUserIDKey), c.ClientIP())
 	if err != nil {
 		if errors.Is(err, service.ErrAppNotFound) {
 			response.Error(c, http.StatusNotFound, 40402, "应用不存在")

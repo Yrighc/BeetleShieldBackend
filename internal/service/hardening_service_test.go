@@ -290,7 +290,7 @@ func TestHardeningService_DownloadURLArtifacts(t *testing.T) {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 
-	unsignedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "")
+	unsignedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "", 0, "")
 	if err != nil {
 		t.Fatalf("DownloadURL(unsigned) error = %v", err)
 	}
@@ -298,7 +298,7 @@ func TestHardeningService_DownloadURLArtifacts(t *testing.T) {
 		t.Fatalf("unsigned URL = %q", unsignedURL)
 	}
 
-	signedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "signed_test")
+	signedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "signed_test", 0, "")
 	if err != nil {
 		t.Fatalf("DownloadURL(signed_test) error = %v", err)
 	}
@@ -316,13 +316,13 @@ func TestHardeningService_DownloadURLErrors(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "bad"); err != service.ErrInvalidHardeningArtifact {
+	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "bad", 0, ""); err != service.ErrInvalidHardeningArtifact {
 		t.Fatalf("DownloadURL() invalid artifact err = %v, want ErrInvalidHardeningArtifact", err)
 	}
-	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, ""); err != service.ErrHardeningArtifactNotFound {
+	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "", 0, ""); err != service.ErrHardeningArtifactNotFound {
 		t.Fatalf("DownloadURL() missing unsigned artifact err = %v, want ErrHardeningArtifactNotFound", err)
 	}
-	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "signed_test"); err != service.ErrHardeningArtifactNotFound {
+	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "signed_test", 0, ""); err != service.ErrHardeningArtifactNotFound {
 		t.Fatalf("DownloadURL() missing signed artifact err = %v, want ErrHardeningArtifactNotFound", err)
 	}
 }
@@ -339,10 +339,10 @@ func TestHardeningService_ErrorMappings(t *testing.T) {
 	if _, err := svc.History(999999); err != service.ErrHardeningAppNotFound {
 		t.Fatalf("History() err = %v, want ErrHardeningAppNotFound", err)
 	}
-	if _, err := svc.DownloadURL(context.Background(), 999999, ""); err != service.ErrHardeningTaskNotFound {
+	if _, err := svc.DownloadURL(context.Background(), 999999, "", 0, ""); err != service.ErrHardeningTaskNotFound {
 		t.Fatalf("DownloadURL() missing task err = %v, want ErrHardeningTaskNotFound", err)
 	}
-	if _, err := svc.DownloadURL(context.Background(), 999999, "bad"); err != service.ErrHardeningTaskNotFound {
+	if _, err := svc.DownloadURL(context.Background(), 999999, "bad", 0, ""); err != service.ErrHardeningTaskNotFound {
 		t.Fatalf("DownloadURL() missing task with bad artifact err = %v, want ErrHardeningTaskNotFound", err)
 	}
 }

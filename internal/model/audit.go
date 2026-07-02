@@ -5,15 +5,17 @@ import "time"
 type AuditAction string
 
 const (
-	AuditActionLoginSuccess     AuditAction = "auth.login.success"
-	AuditActionLoginFailure     AuditAction = "auth.login.failure"
-	AuditActionAppUpload        AuditAction = "app.upload"
-	AuditActionAppDelete        AuditAction = "app.delete"
-	AuditActionHardeningCreate  AuditAction = "hardening_task.create"
-	AuditActionStrategySave     AuditAction = "strategy.save"
-	AuditActionUserCreate       AuditAction = "user.create"
-	AuditActionUserUpdate       AuditAction = "user.update"
-	AuditActionUserStatusChange AuditAction = "user.update_status"
+	AuditActionLoginSuccess      AuditAction = "auth.login.success"
+	AuditActionLoginFailure      AuditAction = "auth.login.failure"
+	AuditActionAppUpload         AuditAction = "app.upload"
+	AuditActionAppDelete         AuditAction = "app.delete"
+	AuditActionAppDownload       AuditAction = "app.download"
+	AuditActionHardeningCreate   AuditAction = "hardening_task.create"
+	AuditActionHardeningDownload AuditAction = "hardening_task.download"
+	AuditActionStrategySave      AuditAction = "strategy.save"
+	AuditActionUserCreate        AuditAction = "user.create"
+	AuditActionUserUpdate        AuditAction = "user.update"
+	AuditActionUserStatusChange  AuditAction = "user.update_status"
 )
 
 // AuditLog is intentionally FK-free. ActorEmail is a denormalized snapshot so

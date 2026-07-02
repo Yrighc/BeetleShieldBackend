@@ -214,12 +214,25 @@ func (s *AppService) Delete(ctx context.Context, id uint, actorUserID uint, ip s
 	return nil
 }
 
-func (s *AppService) DownloadURL(ctx context.Context, id uint) (string, error) {
+func (s *AppService) DownloadURL(ctx context.Context, id uint, actorUserID uint, ip string) (string, error) {
 	app, err := s.appRepo.FindByID(id)
 	if err != nil {
 		return "", ErrAppNotFound
 	}
-	return s.storage.PresignedDownloadURL(ctx, app.ObjectKey, 15*time.Minute)
+	downloadURL, err := s.storage.PresignedDownloadURL(ctx, app.ObjectKey, 15*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	s.recordAudit(RecordAuditInput{
+		ActorUserID: actorUserID,
+		Action:      model.AuditActionAppDownload,
+		TargetType:  "app",
+		TargetID:    app.ID,
+		Detail:      app.Name + " (" + app.PackageName + ")",
+		IP:          ip,
+		Success:     true,
+	})
+	return downloadURL, nil
 }
 
 func (s *AppService) recordAudit(input RecordAuditInput) {

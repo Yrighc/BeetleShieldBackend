@@ -178,7 +178,7 @@ func (s *HardeningService) History(appID uint) ([]model.HardeningTask, error) {
 	return s.hardeningRepo.RecentByApp(appID, 5)
 }
 
-func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifact string) (string, error) {
+func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifact string, actorUserID uint, ip string) (string, error) {
 	task, err := s.hardeningRepo.FindByID(taskID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -200,7 +200,24 @@ func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifac
 		return "", ErrHardeningArtifactNotFound
 	}
 
-	return s.storage.PresignedDownloadURL(ctx, objectKey, 15*time.Minute)
+	downloadURL, err := s.storage.PresignedDownloadURL(ctx, objectKey, 15*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	artifactLabel := artifact
+	if artifactLabel == "" {
+		artifactLabel = "unsigned"
+	}
+	s.recordAudit(RecordAuditInput{
+		ActorUserID: actorUserID,
+		Action:      model.AuditActionHardeningDownload,
+		TargetType:  "hardening_task",
+		TargetID:    task.ID,
+		Detail:      task.App.Name + " / " + task.TaskNo + " / " + artifactLabel,
+		IP:          ip,
+		Success:     true,
+	})
+	return downloadURL, nil
 }
 
 func generateHardeningTaskNo(now time.Time) string {
