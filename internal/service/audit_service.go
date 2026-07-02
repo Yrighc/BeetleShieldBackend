@@ -27,6 +27,11 @@ func NewAuditService(auditRepo *repository.AuditRepository) *AuditService {
 }
 
 func (s *AuditService) Record(input RecordAuditInput) {
+	if s == nil || s.auditRepo == nil {
+		log.Printf("audit: failed to record %s: audit repository is not configured", input.Action)
+		return
+	}
+
 	entry := &model.AuditLog{
 		ActorUserID: input.ActorUserID,
 		ActorEmail:  input.ActorEmail,

@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -81,5 +82,68 @@ func TestAuditService_ListNoMatches(t *testing.T) {
 	}
 	if len(logs) != 0 || total != 0 {
 		t.Fatalf("got len=%d total=%d, want empty result", len(logs), total)
+	}
+}
+
+func TestAuditService_RecordDoesNotPanicWhenRepositoryMissing(t *testing.T) {
+	auditService := service.NewAuditService(nil)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Record() panicked with nil repository: %v", r)
+		}
+	}()
+
+	auditService.Record(service.RecordAuditInput{
+		Action:  model.AuditActionLoginFailure,
+		Success: false,
+	})
+}
+
+func TestAuditService_RecordSwallowsRepositoryCreateError(t *testing.T) {
+	auditService, database, marker, actorID := setupAuditService(t)
+	callbackName := fmt.Sprintf("audit-service-create-error-%d", time.Now().UnixNano())
+	injectedErr := errors.New("injected audit create failure")
+
+	if err := database.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Schema != nil && tx.Statement.Schema.Table == "audit_logs" {
+			tx.AddError(injectedErr)
+		}
+	}); err != nil {
+		t.Fatalf("register callback: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := database.Callback().Create().Remove(callbackName); err != nil {
+			t.Fatalf("remove callback: %v", err)
+		}
+	})
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Record() panicked on repository error: %v", r)
+		}
+	}()
+
+	auditService.Record(service.RecordAuditInput{
+		ActorUserID: actorID,
+		Action:      model.AuditActionAppUpload,
+		TargetType:  "app",
+		TargetID:    1,
+		Detail:      "injected failure",
+		IP:          marker,
+		Success:     true,
+	})
+
+	logs, total, err := auditService.List(repository.AuditListFilter{
+		ActorUserID: actorID,
+		Action:      string(model.AuditActionAppUpload),
+		Page:        1,
+		PageSize:    10,
+	})
+	if err != nil {
+		t.Fatalf("List() after failed Record() error = %v", err)
+	}
+	if total != 0 || len(logs) != 0 {
+		t.Fatalf("failed audit write should not persist rows, got len=%d total=%d", len(logs), total)
 	}
 }
