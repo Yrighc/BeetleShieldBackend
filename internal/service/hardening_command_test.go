@@ -105,6 +105,87 @@ func TestSHA256FileAndSignedTestArtifactPath(t *testing.T) {
 	}
 }
 
+func TestResolveEffectiveFlags(t *testing.T) {
+	cases := []struct {
+		name     string
+		strategy model.Strategy
+		want     EffectiveFlags
+	}{
+		{
+			name:     "all off",
+			strategy: model.Strategy{},
+			want:     EffectiveFlags{},
+		},
+		{
+			name: "debugger alone does not enable EmulatorDetect",
+			strategy: model.Strategy{
+				Debugger: true,
+			},
+			want: EffectiveFlags{},
+		},
+		{
+			name: "emulator and root detect",
+			strategy: model.Strategy{
+				Emulator:   true,
+				RootDetect: true,
+			},
+			want: EffectiveFlags{EmulatorDetect: true, RootDetect: true},
+		},
+		{
+			name: "hook detect from any of frida/xposed/antihook",
+			strategy: model.Strategy{
+				Frida: true,
+			},
+			want: EffectiveFlags{HookDetect: true},
+		},
+		{
+			name: "signature",
+			strategy: model.Strategy{
+				Signature: true,
+			},
+			want: EffectiveFlags{SigVerify: true},
+		},
+		{
+			name: "string and assets encrypt",
+			strategy: model.Strategy{
+				StringEncrypt: true,
+				ResEncrypt:    true,
+			},
+			want: EffectiveFlags{StringEncrypt: true, AssetsEncrypt: true},
+		},
+		{
+			name: "vmp from dex high alone",
+			strategy: model.Strategy{
+				DexLevel: model.DexLevelHigh,
+			},
+			want: EffectiveFlags{VMPEnabled: true},
+		},
+		{
+			name: "vmp from so shell vmp alone",
+			strategy: model.Strategy{
+				SoShell: model.SoShellVMP,
+			},
+			want: EffectiveFlags{VMPEnabled: true},
+		},
+		{
+			name: "so shell aes does not enable vmp",
+			strategy: model.Strategy{
+				SoShell: model.SoShellAES,
+			},
+			want: EffectiveFlags{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResolveEffectiveFlags(tc.strategy)
+			if got != tc.want {
+				t.Fatalf("ResolveEffectiveFlags(%+v) = %+v, want %+v", tc.strategy, got, tc.want)
+			}
+		})
+	}
+}
+
 func countArg(args []string, target string) int {
 	count := 0
 	for _, arg := range args {
