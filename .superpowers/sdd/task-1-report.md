@@ -1,156 +1,105 @@
-# Task 1 Report: ResolveEffectiveFlags + BuildDPTCommand refactor
+# Task 1 报告：提取 `computeScoreBreakdown` + 新增 `ResolveRiskLevel`
 
-## Summary
+> 注：本文件此前内容是更早一轮"Task 1"（`ResolveEffectiveFlags` 抽取，已提交为 commit `0ae4413`）的报告。
+> 当前任务是 Dashboard overview 计划里新的 Task 1（提取 `computeScoreBreakdown`、新增 `ResolveRiskLevel`），
+> 与 `ResolveEffectiveFlags` 是两轮不同的重构，本文件内容已替换为本轮任务的报告。
 
-Successfully extracted `ResolveEffectiveFlags` as a single source of truth for engine flags, refactored `BuildDPTCommand` to use it, and added comprehensive test coverage. The refactor preserves exact behavior of all existing functionality while enabling code reuse for the hardening report scorer (Task 2).
+## 变更文件
 
-## Implementation Details
+- `internal/service/hardening_report.go`
+  - 新增私有类型 `scoreBreakdown` 及函数 `computeScoreBreakdown(flags EffectiveFlags, dexLevel model.DexObfuscationLevel) scoreBreakdown`：
+    把原来内联在 `BuildHardeningReport` 里的六项打分逻辑（`antiDebugEnvScore`/`hookScore`/`sigScore`/`dexPoints`/`soPoints`/`encryptPoints`/`afterScore`）抽成单一函数。
+  - 新增导出函数 `ResolveRiskLevel(strategy model.Strategy) model.RiskLevel`：
+    内部调用 `ResolveEffectiveFlags` + `computeScoreBreakdown` + `riskLevelForScore`，供后续 Task（worker 在任务完成时持久化 `App.RiskLevel`）复用，避免与 `BuildHardeningReport` 的评分逻辑重复实现、产生漂移。
+  - `BuildHardeningReport` 内部改为调用 `computeScoreBreakdown`，用返回的 `scoreBreakdown`（局部变量 `b`）替换原来的六个局部变量引用，行为完全不变。
+- `internal/service/hardening_report_test.go`
+  - 追加三个测试：`TestResolveRiskLevel_NoStrategyIsCritical`、`TestResolveRiskLevel_FullyHardenedIsLow`、`TestResolveRiskLevel_MatchesBuildHardeningReportRiskLevel`（后者用多组策略断言 `ResolveRiskLevel` 与 `BuildHardeningReport(...).RiskLevel` 计算结果一致）。
+  - 均按 brief（`.superpowers/sdd/task-1-brief.md`）中给出的代码原样添加，复用文件内已有的 `fullyHardenedStrategy()` / `baseReportTask()` helper。
 
-### What Was Implemented
+未修改任何公共接口签名（`BuildHardeningReport` 签名不变），未涉及数据库 migration/config 改动。
 
-1. **New Type: `EffectiveFlags`** (7 fields, all bool)
-   - `EmulatorDetect`: maps from `Strategy.Emulator`
-   - `RootDetect`: maps from `Strategy.RootDetect`
-   - `HookDetect`: maps from logical OR of `Strategy.AntiHook`, `Strategy.Frida`, `Strategy.Xposed`
-   - `SigVerify`: maps from `Strategy.Signature`
-   - `StringEncrypt`: maps from `Strategy.StringEncrypt`
-   - `AssetsEncrypt`: maps from `Strategy.ResEncrypt`
-   - `VMPEnabled`: maps from `Strategy.DexLevel == DexLevelHigh OR Strategy.SoShell == SoShellVMP`
+## 测试命令与结果
 
-2. **New Function: `ResolveEffectiveFlags(s model.Strategy) EffectiveFlags`**
-   - Pure function that translates Strategy fields to engine flags
-   - Deliberately excludes `Debugger` and non-VMP `SoShell` values (AES, custom_so) since they're stored but never wired to dpt.jar parameters
-   - Centralizes logic to prevent drift between BuildDPTCommand and future consumers (report scorer)
+### Step 2：确认新测试先失败（RED）
 
-3. **Refactored `BuildDPTCommand`**
-   - Replaced 7 direct Strategy field checks with calls to `ResolveEffectiveFlags`
-   - Maintained identical function signature and argument ordering
-   - Preserved file integrity check and proxy detect logic (these don't have EffectiveFlags counterparts)
-   - Argument list output is bytewise identical to pre-refactor version
-
-### Files Modified
-
-- `internal/service/hardening_command.go`: Added `EffectiveFlags` struct (30 lines) + `ResolveEffectiveFlags` function (10 lines) + refactored `BuildDPTCommand` (9 lines changed)
-- `internal/service/hardening_command_test.go`: Added `TestResolveEffectiveFlags` with 9 test cases (79 lines)
-
-## TDD Evidence
-
-### RED Phase
-```bash
-$ go test ./internal/service/... -run TestResolveEffectiveFlags -v
+```
+go test ./internal/service/... -run TestResolveRiskLevel -v
 ```
 
-**Output (before implementation):**
+输出（节选）：
 ```
-# beetleshield-backend/internal/service [beetleshield-backend/internal/service.test]
-internal/service/hardening_command_test.go:112:12: undefined: EffectiveFlags
-internal/service/hardening_command_test.go:117:14: undefined: EffectiveFlags
-...
-[9 errors total]
+internal/service/hardening_report_test.go:171:20: undefined: service.ResolveRiskLevel
+internal/service/hardening_report_test.go:177:20: undefined: service.ResolveRiskLevel
+internal/service/hardening_report_test.go:192:18: undefined: service.ResolveRiskLevel
 FAIL	beetleshield-backend/internal/service [build failed]
 ```
+结论：FAIL，原因与预期一致（`ResolveRiskLevel` 尚未实现，编译期报 `undefined`）。
 
-**Expected failure reason:** `EffectiveFlags` type and `ResolveEffectiveFlags` function not yet defined.
+### Step 4：实现后重新运行（GREEN）
 
-### GREEN Phase
-```bash
-$ go test ./internal/service/... -run TestResolveEffectiveFlags -v
+```
+go test ./internal/service/... -run 'TestResolveRiskLevel|TestBuildHardeningReport' -v
 ```
 
-**Output (after implementation):**
+输出：
 ```
-=== RUN   TestResolveEffectiveFlags
-=== RUN   TestResolveEffectiveFlags/all_off
-=== RUN   TestResolveEffectiveFlags/debugger_alone_does_not_enable_EmulatorDetect
-=== RUN   TestResolveEffectiveFlags/emulator_and_root_detect
-=== RUN   TestResolveEffectiveFlags/hook_detect_from_any_of_frida/xposed/antihook
-=== RUN   TestResolveEffectiveFlags/signature
-=== RUN   TestResolveEffectiveFlags/string_and_assets_encrypt
-=== RUN   TestResolveEffectiveFlags/vmp_from_dex_high_alone
-=== RUN   TestResolveEffectiveFlags/vmp_from_so_shell_vmp_alone
-=== RUN   TestResolveEffectiveFlags/so_shell_aes_does_not_enable_vmp
---- PASS: TestResolveEffectiveFlags (0.00s)
-    --- PASS: all_off (0.00s)
-    --- PASS: debugger_alone_does_not_enable_EmulatorDetect (0.00s)
-    --- PASS: emulator_and_root_detect (0.00s)
-    --- PASS: hook_detect_from_any_of_frida/xposed/antihook (0.00s)
-    --- PASS: signature (0.00s)
-    --- PASS: string_and_assets_encrypt (0.00s)
-    --- PASS: vmp_from_dex_high_alone (0.00s)
-    --- PASS: vmp_from_so_shell_vmp_alone (0.00s)
-    --- PASS: so_shell_aes_does_not_enable_vmp (0.00s)
+=== RUN   TestBuildHardeningReport_FullyHardenedScoresLowRisk
+--- PASS: TestBuildHardeningReport_FullyHardenedScoresLowRisk (0.00s)
+=== RUN   TestBuildHardeningReport_NoStrategyScoresMaxRiskAndCritical
+--- PASS: TestBuildHardeningReport_NoStrategyScoresMaxRiskAndCritical (0.00s)
+=== RUN   TestBuildHardeningReport_DebuggerFieldAloneDoesNotReduceRisk
+--- PASS: TestBuildHardeningReport_DebuggerFieldAloneDoesNotReduceRisk (0.00s)
+=== RUN   TestBuildHardeningReport_FiveDimensionsWithMergedAntiDebug
+--- PASS: TestBuildHardeningReport_FiveDimensionsWithMergedAntiDebug (0.00s)
+=== RUN   TestBuildHardeningReport_ChecklistHasSixItemsWithKnownStatuses
+--- PASS: TestBuildHardeningReport_ChecklistHasSixItemsWithKnownStatuses (0.00s)
+=== RUN   TestBuildHardeningReport_ArtifactPrefersSignedTestOverUnsigned
+--- PASS: TestBuildHardeningReport_ArtifactPrefersSignedTestOverUnsigned (0.00s)
+=== RUN   TestBuildHardeningReport_ArtifactFallsBackToUnsignedWhenNoSignedTest
+--- PASS: TestBuildHardeningReport_ArtifactFallsBackToUnsignedWhenNoSignedTest (0.00s)
+=== RUN   TestBuildHardeningReport_CopiesAppAndTaskIdentity
+--- PASS: TestBuildHardeningReport_CopiesAppAndTaskIdentity (0.00s)
+=== RUN   TestResolveRiskLevel_NoStrategyIsCritical
+--- PASS: TestResolveRiskLevel_NoStrategyIsCritical (0.00s)
+=== RUN   TestResolveRiskLevel_FullyHardenedIsLow
+--- PASS: TestResolveRiskLevel_FullyHardenedIsLow (0.00s)
+=== RUN   TestResolveRiskLevel_MatchesBuildHardeningReportRiskLevel
+--- PASS: TestResolveRiskLevel_MatchesBuildHardeningReportRiskLevel (0.00s)
 PASS
+ok  	beetleshield-backend/internal/service	0.564s
 ```
+结论：11/11 PASS，包括全部预置的 `TestBuildHardeningReport_*` 回归测试（证明重构未改变可观察行为）与 3 个新增的 `TestResolveRiskLevel_*` 测试。
 
-### Regression Test (Refactored BuildDPTCommand)
-```bash
-$ go test ./internal/service/... -run 'TestResolveEffectiveFlags|TestBuildDPTCommand|TestNormalizeVMPRules|TestSHA256File' -v
+### 额外自检
+
 ```
-
-**Output:**
+go vet ./...
 ```
-=== RUN   TestNormalizeVMPRules_DefaultAndCustom
---- PASS: TestNormalizeVMPRules_DefaultAndCustom (0.00s)
-=== RUN   TestBuildDPTCommand_HighStrengthMapping
---- PASS: TestBuildDPTCommand_HighStrengthMapping (0.00s)
-=== RUN   TestBuildDPTCommand_DeduplicatesHookAndVMP
---- PASS: TestBuildDPTCommand_DeduplicatesHookAndVMP (0.00s)
-=== RUN   TestSHA256FileAndSignedTestArtifactPath
---- PASS: TestSHA256FileAndSignedTestArtifactPath (0.00s)
-=== RUN   TestResolveEffectiveFlags
-    [9 subtests all PASS]
---- PASS: TestResolveEffectiveFlags (0.00s)
-PASS
-ok  	beetleshield-backend/internal/service	0.607s
+输出：无（clean）。
+
 ```
+gofmt -l .
+```
+输出：无（clean，无需要格式化的文件）。
 
-**Key findings:**
-- ✓ `TestBuildDPTCommand_HighStrengthMapping` still PASS (proves refactor preserved exact command-line argument list)
-- ✓ `TestBuildDPTCommand_DeduplicatesHookAndVMP` still PASS (hook and VMP deduplication still works)
-- ✓ All 9 `TestResolveEffectiveFlags` subtests PASS
-- ✓ No regression in other package tests
+```
+go test ./internal/service/... -v
+```
+完整 `service` 包测试（含需要真实 Postgres 的 repository 相关用例）全部 PASS，未因本次改动引入新的失败（日志中出现的 `record not found` / `audit repository is not configured` 均为既有测试用例的预期行为，与本次改动无关）。
 
-## Self-Review Findings
+## 自检说明
 
-1. **Correctness**: The implementation exactly matches the task brief specifications. All test cases pass.
-
-2. **Logic Verification**: 
-   - `Debugger` field correctly excluded (not wired to dpt.jar)
-   - `SoShell == AES` correctly returns `VMPEnabled: false`
-   - Hook detection correctly OR's three sources: `AntiHook || Frida || Xposed`
-   - VMP detection correctly OR's two sources: `DexLevel == High || SoShell == VMP`
-
-3. **Test Coverage**: 9 test cases cover:
-   - All-off baseline
-   - Each individual flag
-   - Boundary cases (e.g., "debugger alone doesn't enable emulator", "SoShell AES doesn't enable VMP")
-   - OR'd conditions (hook from any of 3 sources, VMP from either of 2 sources)
-
-4. **Refactor Safety**: 
-   - Function signature unchanged: `BuildDPTCommand(input EngineCommandInput) []string`
-   - Argument list order unchanged (tested by existing regression tests)
-   - No behavior change to callers
-
-5. **Code Quality**:
-   - Follows existing code patterns in the file
-   - Uses direct field mapping (no unnecessary abstraction)
-   - Comment explains the design rationale (why narrower than Strategy)
-   - No dead code or technical debt introduced
+1. **改动范围**：仅涉及 `internal/service/hardening_report.go` 与 `internal/service/hardening_report_test.go` 两个文件，未触碰路由/handler/repository/worker 层，也未修改 `BuildHardeningReport` 对外签名，符合"按需最小改动"要求。
+2. **行为等价性**：`computeScoreBreakdown` 是对原内联代码的纯粹搬移（无任何计算逻辑变化），`BuildHardeningReport` 的返回值构造只是把六个局部变量替换成 `scoreBreakdown` 结构体的字段访问；已有全部 `TestBuildHardeningReport_*` 用例作为回归保护，全部原样通过。
+3. **`ResolveRiskLevel` 的正确性**：新增测试 `TestResolveRiskLevel_MatchesBuildHardeningReportRiskLevel` 用多组代表性策略（空策略/全量加固/仅模拟器+root/仅 Frida+DEX 高混淆/仅 Debugger 字段）交叉验证 `ResolveRiskLevel` 与 `BuildHardeningReport(...).RiskLevel` 结果一致，覆盖了"Debugger 字段不影响评分"这类边界情况。
+4. **数据库 / 配置改动**：无。本任务是纯计算逻辑提取，不涉及 `Migrate()`、`config.go`、`.env` 改动。
+5. **审计日志 / 状态机影响**：无。`ResolveRiskLevel` 是纯函数（无副作用、不访问数据库），本任务不修改 `hardening_worker` 状态机或审计记录路径；后续 Task（worker 侧持久化 `App.RiskLevel`）会是首个调用方，届时需要评估是否需要为该次持久化补充审计记录，但那是下一个任务的范畴。
+6. **风险点**：无已知风险。`scoreBreakdown` 与 `computeScoreBreakdown` 均为包内私有，不影响外部调用方；唯一新增的导出符号 `ResolveRiskLevel` 签名与 brief 中约定的一致（`func ResolveRiskLevel(strategy model.Strategy) model.RiskLevel`）。
 
 ## Commit
 
 ```
-Commit: 0ae4413
-Subject: refactor: extract ResolveEffectiveFlags as single source of truth for engine flags
-Files changed: 2
-  - internal/service/hardening_command.go (+40 lines)
-  - internal/service/hardening_command_test.go (+79 lines)
+refactor: extract computeScoreBreakdown, add ResolveRiskLevel
+
+（提交哈希见下方 git log，文件：internal/service/hardening_report.go、internal/service/hardening_report_test.go）
 ```
-
-## Issues & Concerns
-
-None. The implementation is complete, correct, and ready for the next task (Task 2: hardening report scorer, which will reuse `ResolveEffectiveFlags`).
-
-## Next Steps
-
-Task 2 can now safely import and reuse `service.ResolveEffectiveFlags` for risk-scoring logic without duplicating or drifting from the canonical engine flags definition.
