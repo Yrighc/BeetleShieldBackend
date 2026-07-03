@@ -137,3 +137,50 @@ func TestAppRepository_UpdateStatus(t *testing.T) {
 		t.Fatalf("UpdateStatus() missing app error = %v, want %v", err, gorm.ErrRecordNotFound)
 	}
 }
+
+func TestAppRepository_TopByRiskLevelOrdersBySeverity(t *testing.T) {
+	repo := setupAppRepo(t)
+
+	low := model.RiskLevelLow
+	medium := model.RiskLevelMedium
+	critical := model.RiskLevelCritical
+
+	apps := []model.App{
+		{Name: "低风险应用", PackageName: "com.repotest.risk.low", Version: "1.0",
+			Tag: model.AppTagTool, Status: model.AppStatusCompleted, RiskLevel: &low,
+			ObjectKey: "k-low", MD5: "m1", SHA256: "s1", UploadedBy: 1},
+		{Name: "中风险应用", PackageName: "com.repotest.risk.medium", Version: "1.0",
+			Tag: model.AppTagTool, Status: model.AppStatusCompleted, RiskLevel: &medium,
+			ObjectKey: "k-medium", MD5: "m2", SHA256: "s2", UploadedBy: 1},
+		{Name: "严重风险应用", PackageName: "com.repotest.risk.critical", Version: "1.0",
+			Tag: model.AppTagTool, Status: model.AppStatusCompleted, RiskLevel: &critical,
+			ObjectKey: "k-critical", MD5: "m3", SHA256: "s3", UploadedBy: 1},
+	}
+	for i := range apps {
+		if err := repo.Create(&apps[i]); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+
+	result, err := repo.TopByRiskLevel(20)
+	if err != nil {
+		t.Fatalf("TopByRiskLevel() error = %v", err)
+	}
+
+	positions := map[string]int{}
+	for i, app := range result {
+		switch app.PackageName {
+		case "com.repotest.risk.low", "com.repotest.risk.medium", "com.repotest.risk.critical":
+			positions[app.PackageName] = i
+		}
+	}
+	if len(positions) != 3 {
+		t.Fatalf("expected all 3 test apps in result, found positions: %+v (result len=%d)", positions, len(result))
+	}
+	if positions["com.repotest.risk.critical"] >= positions["com.repotest.risk.medium"] {
+		t.Fatalf("critical (pos %d) should rank above medium (pos %d)", positions["com.repotest.risk.critical"], positions["com.repotest.risk.medium"])
+	}
+	if positions["com.repotest.risk.medium"] >= positions["com.repotest.risk.low"] {
+		t.Fatalf("medium (pos %d) should rank above low (pos %d)", positions["com.repotest.risk.medium"], positions["com.repotest.risk.low"])
+	}
+}

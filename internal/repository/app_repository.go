@@ -80,3 +80,23 @@ func (r *AppRepository) List(filter AppListFilter) ([]model.App, int64, error) {
 func (r *AppRepository) UpdateStatus(id uint, status model.AppStatus) error {
 	return requireUpdatedRow(r.db.Model(&model.App{}).Where("id = ?", id).Update("status", status))
 }
+
+func (r *AppRepository) TopByRiskLevel(limit int) ([]model.App, error) {
+	if limit < 1 {
+		limit = 5
+	}
+
+	var apps []model.App
+	err := r.db.
+		Where("risk_level IS NOT NULL").
+		Order(`CASE risk_level
+			WHEN 'critical' THEN 4
+			WHEN 'high' THEN 3
+			WHEN 'medium' THEN 2
+			WHEN 'low' THEN 1
+			ELSE 0
+		END DESC, updated_at DESC`).
+		Limit(limit).
+		Find(&apps).Error
+	return apps, err
+}
