@@ -348,6 +348,85 @@ func (r *HardeningRepository) RecentByApp(appID uint, limit int) ([]model.Harden
 	return tasks, err
 }
 
+func (r *HardeningRepository) CountByStatusSince(since time.Time) (map[model.HardeningTaskStatus]int64, error) {
+	var statuses []model.HardeningTaskStatus
+	if err := r.db.Model(&model.HardeningTask{}).
+		Where("created_at >= ?", since).
+		Pluck("status", &statuses).Error; err != nil {
+		return nil, err
+	}
+
+	counts := make(map[model.HardeningTaskStatus]int64, 4)
+	for _, status := range statuses {
+		counts[status]++
+	}
+	return counts, nil
+}
+
+func (r *HardeningRepository) HourlyCountsSince(since time.Time) ([24]int64, error) {
+	var counts [24]int64
+
+	var createdAts []time.Time
+	if err := r.db.Model(&model.HardeningTask{}).
+		Where("created_at >= ?", since).
+		Pluck("created_at", &createdAts).Error; err != nil {
+		return counts, err
+	}
+
+	for _, createdAt := range createdAts {
+		counts[createdAt.Local().Hour()]++
+	}
+	return counts, nil
+}
+
+type hardeningTaskDurationWindow struct {
+	StartedAt  time.Time
+	FinishedAt time.Time
+}
+
+func (r *HardeningRepository) AverageCompletedDurationSince(since time.Time) (avgSeconds float64, ok bool, err error) {
+	var windows []hardeningTaskDurationWindow
+	if err := r.db.Model(&model.HardeningTask{}).
+		Select("started_at, finished_at").
+		Where("created_at >= ? AND status = ? AND started_at IS NOT NULL AND finished_at IS NOT NULL", since, model.HardeningTaskStatusCompleted).
+		Find(&windows).Error; err != nil {
+		return 0, false, err
+	}
+	if len(windows) == 0 {
+		return 0, false, nil
+	}
+
+	var total float64
+	for _, w := range windows {
+		total += w.FinishedAt.Sub(w.StartedAt).Seconds()
+	}
+	return total / float64(len(windows)), true, nil
+}
+
+func (r *HardeningRepository) QueueCount() (int64, error) {
+	var count int64
+	err := r.db.Model(&model.HardeningTask{}).
+		Where("status IN ?", []model.HardeningTaskStatus{
+			model.HardeningTaskStatusQueued,
+			model.HardeningTaskStatusRunning,
+		}).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *HardeningRepository) Recent(limit int) ([]model.HardeningTask, error) {
+	if limit < 1 {
+		limit = 5
+	}
+
+	var tasks []model.HardeningTask
+	err := r.db.Preload("App").
+		Order("created_at DESC, id DESC").
+		Limit(limit).
+		Find(&tasks).Error
+	return tasks, err
+}
+
 func (r *HardeningRepository) Steps(taskID uint) ([]model.HardeningStep, error) {
 	var steps []model.HardeningStep
 	err := r.db.Where("task_id = ?", taskID).Order("sort_order ASC").Find(&steps).Error

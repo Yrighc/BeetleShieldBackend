@@ -754,3 +754,219 @@ func TestCleanupHardeningRepoData_OnlyRemovesScopedRows(t *testing.T) {
 		t.Fatalf("other app count = %d, want 1", otherAppCount)
 	}
 }
+
+func TestHardeningRepository_CountByStatusSinceCountsOnlyTasksAtOrAfterCutoff(t *testing.T) {
+	repo, appRepo, database, scope := setupHardeningRepo(t)
+	since := time.Now()
+
+	completedApp := createRepoApp(t, appRepo, scope, "count-completed")
+	completedTask := newRepoTask(scope, "count-completed", completedApp.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&completedTask); err != nil {
+		t.Fatalf("CreateTaskWithSteps() completed error = %v", err)
+	}
+	if err := repo.MarkTaskRunning(completedTask.ID, since.Add(time.Second)); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	if err := repo.CompleteTaskForApp(completedTask.ID, "unsigned.apk", 10, "abc", "signed.apk", 11, "def", since.Add(2*time.Second), model.RiskLevelLow); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
+	}
+
+	failedApp := createRepoApp(t, appRepo, scope, "count-failed")
+	failedTask := newRepoTask(scope, "count-failed", failedApp.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&failedTask); err != nil {
+		t.Fatalf("CreateTaskWithSteps() failed error = %v", err)
+	}
+	if err := repo.MarkTaskRunning(failedTask.ID, since.Add(time.Second)); err != nil {
+		t.Fatalf("MarkTaskRunning() failed error = %v", err)
+	}
+	if err := repo.FailTaskForApp(failedTask.ID, "engine crashed", since.Add(2*time.Second)); err != nil {
+		t.Fatalf("FailTaskForApp() error = %v", err)
+	}
+
+	beforeCutoffApp := createRepoApp(t, appRepo, scope, "count-old")
+	beforeCutoffTask := newRepoTask(scope, "count-old", beforeCutoffApp.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&beforeCutoffTask); err != nil {
+		t.Fatalf("CreateTaskWithSteps() old error = %v", err)
+	}
+	if err := database.Model(&model.HardeningTask{}).Where("id = ?", beforeCutoffTask.ID).
+		Update("created_at", since.Add(-time.Hour)).Error; err != nil {
+		t.Fatalf("backdate created_at: %v", err)
+	}
+
+	counts, err := repo.CountByStatusSince(since)
+	if err != nil {
+		t.Fatalf("CountByStatusSince() error = %v", err)
+	}
+	if counts[model.HardeningTaskStatusCompleted] != 1 {
+		t.Fatalf("completed count = %d, want 1 (found: %+v)", counts[model.HardeningTaskStatusCompleted], counts)
+	}
+	if counts[model.HardeningTaskStatusFailed] != 1 {
+		t.Fatalf("failed count = %d, want 1 (found: %+v)", counts[model.HardeningTaskStatusFailed], counts)
+	}
+	if counts[model.HardeningTaskStatusQueued] != 0 {
+		t.Fatalf("queued count = %d, want 0 (backdated task must be excluded): %+v", counts[model.HardeningTaskStatusQueued], counts)
+	}
+}
+
+func TestHardeningRepository_HourlyCountsSinceBucketsByHourOfDay(t *testing.T) {
+	repo, appRepo, database, scope := setupHardeningRepo(t)
+	since := time.Now()
+
+	app := createRepoApp(t, appRepo, scope, "hourly")
+	task := newRepoTask(scope, "hourly", app.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&task); err != nil {
+		t.Fatalf("CreateTaskWithSteps() error = %v", err)
+	}
+
+	fixedHour := time.Date(since.Year(), since.Month(), since.Day(), 5, 30, 0, 0, since.Location())
+	if fixedHour.Before(since) {
+		fixedHour = fixedHour.Add(24 * time.Hour)
+	}
+	if err := database.Model(&model.HardeningTask{}).Where("id = ?", task.ID).
+		Update("created_at", fixedHour).Error; err != nil {
+		t.Fatalf("set created_at: %v", err)
+	}
+
+	counts, err := repo.HourlyCountsSince(since)
+	if err != nil {
+		t.Fatalf("HourlyCountsSince() error = %v", err)
+	}
+	if counts[5] != 1 {
+		t.Fatalf("counts[5] = %d, want 1: %+v", counts[5], counts)
+	}
+	total := int64(0)
+	for _, c := range counts {
+		total += c
+	}
+	if total != 1 {
+		t.Fatalf("total hourly count = %d, want 1: %+v", total, counts)
+	}
+}
+
+func TestHardeningRepository_AverageCompletedDurationSinceComputesExactAverage(t *testing.T) {
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	since := time.Now()
+
+	app := createRepoApp(t, appRepo, scope, "avg-duration")
+	task := newRepoTask(scope, "avg-duration", app.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&task); err != nil {
+		t.Fatalf("CreateTaskWithSteps() error = %v", err)
+	}
+
+	startedAt := since.Add(time.Second)
+	finishedAt := startedAt.Add(125 * time.Second)
+	if err := repo.MarkTaskRunning(task.ID, startedAt); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	if err := repo.CompleteTaskForApp(task.ID, "unsigned.apk", 10, "abc", "signed.apk", 11, "def", finishedAt, model.RiskLevelLow); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
+	}
+
+	avgSeconds, ok, err := repo.AverageCompletedDurationSince(since)
+	if err != nil {
+		t.Fatalf("AverageCompletedDurationSince() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if avgSeconds != 125 {
+		t.Fatalf("avgSeconds = %v, want 125", avgSeconds)
+	}
+}
+
+func TestHardeningRepository_AverageCompletedDurationSinceReturnsNotOkWhenNoneCompleted(t *testing.T) {
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+	since := time.Now()
+
+	app := createRepoApp(t, appRepo, scope, "avg-duration-empty")
+	task := newRepoTask(scope, "avg-duration-empty", app.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&task); err != nil {
+		t.Fatalf("CreateTaskWithSteps() error = %v", err)
+	}
+
+	avgSeconds, ok, err := repo.AverageCompletedDurationSince(since)
+	if err != nil {
+		t.Fatalf("AverageCompletedDurationSince() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("ok = true, want false (no completed tasks since cutoff)")
+	}
+	if avgSeconds != 0 {
+		t.Fatalf("avgSeconds = %v, want 0", avgSeconds)
+	}
+}
+
+func TestHardeningRepository_QueueCountIncludesQueuedAndRunning(t *testing.T) {
+	repo, appRepo, _, scope := setupHardeningRepo(t)
+
+	before, err := repo.QueueCount()
+	if err != nil {
+		t.Fatalf("QueueCount() before error = %v", err)
+	}
+
+	queuedApp := createRepoApp(t, appRepo, scope, "queue-queued")
+	queuedTask := newRepoTask(scope, "queue-queued", queuedApp.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&queuedTask); err != nil {
+		t.Fatalf("CreateTaskWithSteps() queued error = %v", err)
+	}
+
+	runningApp := createRepoApp(t, appRepo, scope, "queue-running")
+	runningTask := newRepoTask(scope, "queue-running", runningApp.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&runningTask); err != nil {
+		t.Fatalf("CreateTaskWithSteps() running error = %v", err)
+	}
+	if err := repo.MarkTaskRunning(runningTask.ID, time.Now()); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+
+	after, err := repo.QueueCount()
+	if err != nil {
+		t.Fatalf("QueueCount() after error = %v", err)
+	}
+	if after-before != 2 {
+		t.Fatalf("QueueCount() delta = %d, want 2 (before=%d after=%d)", after-before, before, after)
+	}
+}
+
+func TestHardeningRepository_RecentReturnsMostRecentTasksGlobally(t *testing.T) {
+	repo, appRepo, database, scope := setupHardeningRepo(t)
+
+	appA := createRepoApp(t, appRepo, scope, "recent-a")
+	taskA := newRepoTask(scope, "recent-a", appA.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&taskA); err != nil {
+		t.Fatalf("CreateTaskWithSteps() A error = %v", err)
+	}
+
+	appB := createRepoApp(t, appRepo, scope, "recent-b")
+	taskB := newRepoTask(scope, "recent-b", appB.ID, model.HardeningTaskStatusQueued)
+	if err := repo.CreateTaskWithSteps(&taskB); err != nil {
+		t.Fatalf("CreateTaskWithSteps() B error = %v", err)
+	}
+
+	future := time.Now().Add(24 * time.Hour)
+	if err := database.Model(&model.HardeningTask{}).Where("id = ?", taskA.ID).
+		Update("created_at", future).Error; err != nil {
+		t.Fatalf("set created_at A: %v", err)
+	}
+	if err := database.Model(&model.HardeningTask{}).Where("id = ?", taskB.ID).
+		Update("created_at", future.Add(time.Second)).Error; err != nil {
+		t.Fatalf("set created_at B: %v", err)
+	}
+
+	recent, err := repo.Recent(2)
+	if err != nil {
+		t.Fatalf("Recent() error = %v", err)
+	}
+	if len(recent) != 2 {
+		t.Fatalf("len(recent) = %d, want 2", len(recent))
+	}
+	if recent[0].ID != taskB.ID {
+		t.Fatalf("recent[0].ID = %d, want %d (most recently created first)", recent[0].ID, taskB.ID)
+	}
+	if recent[1].ID != taskA.ID {
+		t.Fatalf("recent[1].ID = %d, want %d", recent[1].ID, taskA.ID)
+	}
+	if recent[0].App.PackageName != appB.PackageName {
+		t.Fatalf(`recent[0].App.PackageName = %q, want %q (Preload("App") must populate)`, recent[0].App.PackageName, appB.PackageName)
+	}
+}
