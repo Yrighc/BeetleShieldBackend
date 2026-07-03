@@ -95,45 +95,18 @@ The default test suite does not run `dpt.jar`. To test the real engine locally:
 
 ## Docker 化部署
 
-`docker-compose.yml` 里 `postgres`/`minio` 是默认就会启动的依赖服务（`make dev-up`
-一直如此，行为不变）。应用本身（API server + 加固 worker + `dpt.jar` + JRE）打包成一个
-`app` 服务，放在 `full` compose profile 下，默认不随 `docker compose up`/`make dev-up`
-启动，避免打断现有的本地 `make run` 开发流程。
+应用本身（API server + 加固 worker + `dpt.jar` + JRE）也可以打包进 Docker，跟
+`postgres`/`minio` 一起用 `docker compose` 整体部署，放在 `full` compose
+profile 下，默认不随 `docker compose up`/`make dev-up` 启动，不影响上面的本地
+开发流程。完整步骤（含 `dpt.jar` 打包要求、环境变量参考、生产注意事项、故障
+排查）见 [`docs/deployment.md`](docs/deployment.md)。
 
-`dpt.jar` 及其配套资源不随仓库分发（见 `.gitignore` 里的 `/dpt/`），构建镜像前必须
-先手动放好——`dpt.jar` 在运行时会按自身所在目录（而不是当前工作目录）去找
-`shell-files/`、`bin/` 这两个配套目录，只拷贝 `dpt.jar` 单个文件会在实际加固时报
-`Cannot find directory: shell-files` 而失败，三者必须放在同一目录下一起拷贝：
+快速上手：
 
 ```bash
-mkdir -p dpt
-cp -R /path/to/dpt-shell/executable/dpt.jar dpt/
-cp -R /path/to/dpt-shell/executable/shell-files dpt/
-cp -R /path/to/dpt-shell/executable/bin dpt/
-cp .env.example .env                    # 如果还没有 .env
+mkdir -p dpt && cp -R /path/to/dpt-shell/executable/{dpt.jar,shell-files,bin} dpt/
+make docker-up
 ```
-
-（已验证：这套 JRE 21 基础镜像足够跑完整条加固链路，包括 VMP 转换和加固后测试签名包
-生成——`dpt.jar` 用的是内置的纯 Java 签名库自己完成签名，不依赖 JDK 专属的
-`jarsigner`，所以不需要换成体积更大的 JDK 镜像。）
-
-然后：
-
-```bash
-make docker-build   # 只构建 app 镜像
-make docker-up       # 构建并启动 postgres + minio + app（含健康检查依赖顺序）
-make docker-down     # 停止并移除这三个服务的容器
-```
-
-`app` 容器里 `DB_HOST`/`MINIO_ENDPOINT`/`DPT_JAR_PATH` 由 `docker-compose.yml` 的
-`environment:` 覆盖为容器网络内的服务名（`postgres`/`minio:9000`）和镜像内固定的
-`/opt/dpt/dpt.jar` 路径，其余配置（`JWT_SECRET`、`ADMIN_EMAIL` 等）仍从挂载进容器的
-本地 `.env` 文件读取——`cmd/server/main.go` 读的是字面量 `./.env` 文件而不是单纯的进程
-环境变量，所以这个文件必须真实挂载进容器（compose 里已经配好了 bind mount）。
-
-如果本机 5432/9000/9001 端口已经被其他项目占用（README "Local setup" 一节提到的场景），
-`full` profile 同样会冲突——修改 `docker-compose.yml` 里对应的端口映射，或者把
-`DB_HOST`/`MINIO_ENDPOINT` 指向已有实例并跳过 compose 里的 `postgres`/`minio` 服务。
 
 ## What's not in this sub-project
 
