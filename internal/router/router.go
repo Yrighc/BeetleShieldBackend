@@ -72,6 +72,7 @@ func New(deps Deps) *gin.Engine {
 		{
 			hardeningTasks.POST("", writeRoles, deps.HardeningHandler.Create)
 			hardeningTasks.GET("", deps.HardeningHandler.List)
+			hardeningTasks.GET("/overview", deps.HardeningHandler.GetOverview)
 			hardeningTasks.GET("/:id", deps.HardeningHandler.Get)
 			hardeningTasks.GET("/:id/logs", deps.HardeningHandler.Logs)
 			hardeningTasks.GET("/:id/report", deps.HardeningHandler.GetReport)

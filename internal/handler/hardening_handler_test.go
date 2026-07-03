@@ -196,7 +196,8 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		auditService,
 		"BeetleShield Engine v2.4.1",
 	)
-	hardeningHandler := handler.NewHardeningHandler(hardeningSvc)
+	dashboardSvc := service.NewDashboardService(hardeningRepo, appRepo, "BeetleShield Engine v2.4.1")
+	hardeningHandler := handler.NewHardeningHandler(hardeningSvc, dashboardSvc)
 
 	r := router.New(router.Deps{
 		JWTSecret:        cfg.JWTSecret,
@@ -577,5 +578,47 @@ func TestHardeningHandler_DownloadURLRequiresAdminOrDeveloperRole(t *testing.T) 
 	}
 	if len(seenActors) != 2 {
 		t.Fatalf("distinct actors recorded for the two successful downloads = %d, want 2 (admin and developer must each land their own audit row)", len(seenActors))
+	}
+}
+
+func TestHardeningHandler_GetOverviewReturnsAggregatedData(t *testing.T) {
+	srv, _, developerToken, _, appID, _, _, cleanup := setupHardeningRouter(t)
+	defer cleanup()
+
+	body, _ := json.Marshal(map[string]interface{}{"appId": appID})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/hardening-tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+developerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	resp.Body.Close()
+
+	// Requesting the literal path "overview" also proves this route isn't
+	// shadowed by GET /:id (which would otherwise fail to parse "overview"
+	// as a uint and return 400, not 200).
+	overviewReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/hardening-tasks/overview", nil)
+	overviewReq.Header.Set("Authorization", "Bearer "+developerToken)
+	overviewResp, err := http.DefaultClient.Do(overviewReq)
+	if err != nil {
+		t.Fatalf("overview request: %v", err)
+	}
+	defer overviewResp.Body.Close()
+	if overviewResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", overviewResp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data service.DashboardOverview `json:"data"`
+	}
+	if err := json.NewDecoder(overviewResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode overview response: %v", err)
+	}
+	if len(got.Data.HourlyTrend) != 24 {
+		t.Fatalf("len(HourlyTrend) = %d, want 24", len(got.Data.HourlyTrend))
+	}
+	if got.Data.SystemStatus.EngineVersion != "BeetleShield Engine v2.4.1" {
+		t.Fatalf("SystemStatus.EngineVersion = %q", got.Data.SystemStatus.EngineVersion)
 	}
 }

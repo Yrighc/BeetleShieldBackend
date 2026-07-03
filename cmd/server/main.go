@@ -91,7 +91,8 @@ func main() {
 		auditService,
 		cfg.HardeningEngineVersion,
 	)
-	hardeningHandler := handler.NewHardeningHandler(hardeningService)
+	dashboardService := service.NewDashboardService(hardeningRepo, appRepo, cfg.HardeningEngineVersion)
+	hardeningHandler := handler.NewHardeningHandler(hardeningService, dashboardService)
 	hardeningWorker := worker.NewHardeningWorker(
 		hardeningRepo,
 		storageClient,

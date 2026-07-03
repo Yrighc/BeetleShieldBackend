@@ -15,11 +15,12 @@ import (
 )
 
 type HardeningHandler struct {
-	svc *service.HardeningService
+	svc          *service.HardeningService
+	dashboardSvc *service.DashboardService
 }
 
-func NewHardeningHandler(svc *service.HardeningService) *HardeningHandler {
-	return &HardeningHandler{svc: svc}
+func NewHardeningHandler(svc *service.HardeningService, dashboardSvc *service.DashboardService) *HardeningHandler {
+	return &HardeningHandler{svc: svc, dashboardSvc: dashboardSvc}
 }
 
 type createHardeningTaskRequest struct {
@@ -197,6 +198,16 @@ func (h *HardeningHandler) AppHistory(c *gin.Context) {
 	}
 
 	response.Success(c, http.StatusOK, gin.H{"items": items})
+}
+
+func (h *HardeningHandler) GetOverview(c *gin.Context) {
+	overview, err := h.dashboardSvc.GetOverview()
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, 50024, "查询系统总览失败")
+		return
+	}
+
+	response.Success(c, http.StatusOK, overview)
 }
 
 func parseUintParam(c *gin.Context, name string) (uint, bool) {
