@@ -67,6 +67,37 @@ func TestLoad_MissingJWTSecret(t *testing.T) {
 	}
 }
 
+func TestLoad_MissingFileFallsBackToEnvVars(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env") // deliberately never written
+
+	t.Setenv("JWT_SECRET", "from-real-env-var")
+	t.Setenv("DB_HOST", "postgres")
+
+	cfg, err := Load(envPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil — a missing .env file should fall back to process env vars, matching `docker run -e ...` without a mounted .env", err)
+	}
+	if cfg.JWTSecret != "from-real-env-var" {
+		t.Errorf("JWTSecret = %q, want %q", cfg.JWTSecret, "from-real-env-var")
+	}
+	if cfg.DBHost != "postgres" {
+		t.Errorf("DBHost = %q, want %q", cfg.DBHost, "postgres")
+	}
+	if cfg.ServerPort != "8080" {
+		t.Errorf("ServerPort = %q, want default %q", cfg.ServerPort, "8080")
+	}
+}
+
+func TestLoad_MissingFileAndMissingJWTSecretStillErrors(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env") // deliberately never written
+
+	if _, err := Load(envPath); err == nil {
+		t.Fatal("Load() expected error for missing JWT_SECRET, got nil")
+	}
+}
+
 func TestLoad_DPTDefaults(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")

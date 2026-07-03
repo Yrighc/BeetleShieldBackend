@@ -4,8 +4,8 @@ services:
     container_name: beetleshield-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: beetleshield
-      POSTGRES_PASSWORD: beetleshield
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
       POSTGRES_DB: beetleshield
     ports:
       # Host-published port is configurable and loopback-only by default —
@@ -16,7 +16,9 @@ services:
     volumes:
       - beetleshield_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U beetleshield -d beetleshield"]
+      # Reference the container's own POSTGRES_USER/POSTGRES_DB instead of
+      # hardcoding them, so this doesn't silently go stale if those change.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -51,6 +53,11 @@ services:
   # runs its own nginx in front of several projects, point it at
   # 127.0.0.1:${APP_HOST_PORT} instead of exposing this container directly.
   app:
+    # Explicit tag (not compose's auto-generated <project>-app name) so a
+    # `docker save`'d image `docker load`ed on a deploy server matches what
+    # `docker compose up` looks for, without needing this host to also have
+    # ./dpt/, ./web/, or a Dockerfile — see docs/deployment.md "跨机器部署".
+    image: beetleshield-backend:latest
     build: .
     container_name: beetleshield-app
     restart: unless-stopped
@@ -76,8 +83,12 @@ services:
     ports:
       # Loopback-only: the host's own nginx reverse-proxies to this port
       # (and terminates TLS / owns the public :80/:443), the container
-      # itself is never exposed directly to the internet.
-      - "127.0.0.1:${APP_HOST_PORT:-8080}:8080"
+      # itself is never exposed directly to the internet. Only the host
+      # side (left of the colon) is meant to change per-deployment — the
+      # container always listens on 8080 (Dockerfile EXPOSE, default
+      # SERVER_PORT), changing the right-hand side here does nothing
+      # without also setting SERVER_PORT in environment: above.
+      - "127.0.0.1:${APP_HOST_PORT:-8081}:8080"
 
 volumes:
   beetleshield_postgres_data:

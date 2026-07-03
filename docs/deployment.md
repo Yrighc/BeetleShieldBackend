@@ -41,7 +41,10 @@
 ## 环境变量参考
 
 以 `.env.example` 为模板，`cp .env.example .env` 后按需修改。`JWT_SECRET`
-没有默认值，缺失会导致进程直接退出（`config.Load` 显式校验）。
+没有默认值，缺失会导致进程直接退出（`config.Load` 显式校验）——这是唯一真正
+必填的变量，其余变量在没有 `.env` 文件、也没有对应进程环境变量的情况下会用
+下表的默认值，或者是空字符串（业务逻辑层面会失败，比如连不上数据库，但不会
+在启动阶段直接报错）。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -73,7 +76,7 @@
 | `POSTGRES_HOST_PORT` | `5432` | postgres 发布到宿主机 `127.0.0.1` 的端口 |
 | `MINIO_API_HOST_PORT` | `9000` | minio S3 API 发布到宿主机 `127.0.0.1` 的端口 |
 | `MINIO_CONSOLE_HOST_PORT` | `9001` | minio 管理控制台发布到宿主机 `127.0.0.1` 的端口 |
-| `APP_HOST_PORT` | `8080` | app（前端+API 一体）发布到宿主机 `127.0.0.1` 的端口 |
+| `APP_HOST_PORT` | `8081` | app（前端+API 一体）发布到宿主机 `127.0.0.1` 的端口；容器内部始终监听 8080，只有这个宿主机侧端口可配 |
 
 这几个端口默认只绑定 `127.0.0.1`，不直接对公网暴露——公开访问应该走服务器上
 已有的 nginx/Caddy 之类反向代理到 `127.0.0.1:${APP_HOST_PORT}`，由它去终结
@@ -177,15 +180,68 @@ make docker-down        # 停止并移除这三个服务的容器（不删数据
 - `DPT_JAR_PATH=/opt/dpt/dpt.jar`
 - `STATIC_DIR=/app/web`
 
-其余配置（`JWT_SECRET`、`ADMIN_EMAIL`、`DPT_TASK_TIMEOUT_MINUTES` 等）仍从
-挂载进容器的本地 `.env` 文件读取——`cmd/server/main.go` 读的是字面量 `./.env`
-文件而不是单纯的进程环境变量，所以这个文件必须真实挂载进容器
-（`docker-compose.yml` 已经配好 `./.env:/app/.env:ro` 的 bind mount，改本地
-`.env` 后重启 `app` 容器即可生效，不需要重新 build）。
+其余配置（`JWT_SECRET`、`ADMIN_EMAIL`、`DPT_TASK_TIMEOUT_MINUTES` 等）默认从
+挂载进容器的本地 `.env` 文件读取（`docker-compose.yml` 配了
+`./.env:/app/.env:ro` 的 bind mount，改本地 `.env` 后重启 `app` 容器即可生
+效，不需要重新 build）。`.env` 文件不是必须存在——`config.Load` 找不到这个
+文件时会直接退回到读取真实的进程环境变量（`viper` 的 `AutomaticEnv`），
+纯用 `environment:`/`docker run -e` 传配置也完全可以，容器平台只支持注入
+环境变量、不支持挂载文件时（比如很多 PaaS）就是这样用的。
 
 `postgres`/`minio` 都配了 healthcheck，`app` 通过
 `depends_on: condition: service_healthy` 等它们健康后再启动，避免首次冷启动
 时因为数据库还没就绪而连接失败。
+
+### 复用宿主机已有的 Postgres/MinIO
+
+不一定要用这个仓库自带的 `postgres`/`minio` 服务——如果部署的服务器上已经有
+其他项目在用的 Postgres/MinIO 容器（团队机器上常见），直接指过去即可，不需
+要为这个项目单独再起一套。
+
+```bash
+docker compose --profile full up -d --no-deps app
+```
+
+`--no-deps` 让 compose 不去尝试拉起 `app` 的 `depends_on`（也就是本仓库自带的
+`postgres`/`minio`），只启动 `app` 这一个容器。`.env` 里 `DB_HOST`/
+`MINIO_ENDPOINT` 改成能从容器内部访问到已有实例的地址：
+
+- 如果已有的 Postgres/MinIO 容器发布了端口到宿主机（`docker ps` 能看到
+  `0.0.0.0:5432->5432` 这种），最简单的方式是用 `host.docker.internal`
+  （Docker Desktop/OrbStack 提供的特殊域名，从任何容器内部都能访问到宿主机）：
+  `DB_HOST=host.docker.internal`、`MINIO_ENDPOINT=host.docker.internal:9000`。
+  `localhost`/`127.0.0.1` 在容器里指向容器自己，不是宿主机，不能这样用。
+- 如果已有容器跟 `app` 在同一个自定义 Docker 网络上，也可以直接用容器名当
+  host（比如 `DB_HOST=pg12-dev`），需要先把 `app` 接到那个网络（compose 的
+  `networks:` 配置，或者 `docker network connect`）。
+
+凭据（`DB_USER`/`DB_PASSWORD`/`DB_NAME`、`MINIO_ACCESS_KEY`/
+`MINIO_SECRET_KEY`/`MINIO_BUCKET`）改成那套已有实例实际的账号密码和库名/
+桶名——这些密码只有你知道，本文档不会替你猜。
+
+### 跨机器部署（构建机 / 部署机分离）
+
+`app` 服务在 `docker-compose.yml` 里显式声明了 `image: beetleshield-backend:latest`
+（不是靠 compose 自动生成的项目名前缀），所以可以在一台有 Go/Node 工具链、
+`dpt.jar`、前端源码的"构建机"上打好镜像，导出成一个文件，拷贝到没有这些东西
+的"部署机"上直接跑，不需要在部署机上重新构建：
+
+```bash
+# 构建机：
+make docker-save     # 等价于 make docker-build + docker save，产出 beetleshield-backend.tar
+
+scp beetleshield-backend.tar docker-compose.yml .env deploy-host:/opt/beetleshield/
+```
+
+```bash
+# 部署机（/opt/beetleshield/ 目录下，只需要这三个文件，不需要源码/dpt.jar/前端产物）：
+docker load -i beetleshield-backend.tar
+make docker-load-up   # 等价于 docker compose --profile full up -d，不会尝试重新构建
+```
+
+`docker-load-up` 不带 `--build`，如果部署机上根本没有 `Dockerfile`/`./dpt/`/
+`./web/`（符合这种分离部署的前提），带 `--build` 的命令会直接报错——这也是
+为什么不能直接用 `make docker-up`。
 
 ## 验证部署是否成功
 
@@ -277,6 +333,14 @@ docker compose --profile full restart app
 ```
 
 ## 常见问题排查
+
+**直接 `docker run` 报 `failed to load config: read config: open .env: no
+such file or directory`**：`cmd/server/main.go` 读的是字面量 `./.env`
+文件，`docker run` 不像 `docker compose` 会自动帮你把 `.env` 挂载进容器。
+现在 `config.Load` 已经改成找不到这个文件就退回读真实进程环境变量，只要用
+`-e KEY=VALUE` 把必需的配置都传进去（至少要有 `JWT_SECRET`）就不会报这个
+错了，不强制要求挂载文件；用 `docker compose` 的话本来就已经在
+`docker-compose.yml` 里配好了 `.env` 的 bind mount，正常不会遇到这个问题。
 
 **`make dev-up`/`make docker-up` 报端口冲突**：本机已经有其他 Postgres/MinIO
 容器占用这些端口（团队机器上常见，比如 `pg12-dev`/`minio-dev` 之类别的项目在

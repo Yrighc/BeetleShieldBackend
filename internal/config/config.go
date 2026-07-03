@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/viper"
 )
@@ -51,6 +52,7 @@ func Load(path string) (*Config, error) {
 	v.AutomaticEnv()
 
 	v.SetDefault("SERVER_PORT", "8080")
+	v.SetDefault("DB_PORT", "5432")
 	v.SetDefault("JWT_EXPIRE_HOURS", 24)
 	v.SetDefault("MAX_UPLOAD_SIZE_MB", 4096)
 	v.SetDefault("MINIO_USE_SSL", false)
@@ -60,8 +62,16 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("DPT_TASK_TIMEOUT_MINUTES", 60)
 	v.SetDefault("HARDENING_ENGINE_VERSION", "BeetleShield Engine v2.4.1")
 
-	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+	// path is optional: container platforms that inject config purely via
+	// process environment variables (e.g. a bare `docker run -e ...`,
+	// without docker-compose's .env bind mount) have no file at path at
+	// all, and that's fine — AutomaticEnv() above already makes every
+	// v.Get* call below fall through to the real environment. Only an
+	// error other than "missing file" (e.g. malformed .env) is fatal.
+	if _, statErr := os.Stat(path); statErr == nil {
+		if err := v.ReadInConfig(); err != nil {
+			return nil, fmt.Errorf("read config: %w", err)
+		}
 	}
 
 	cfg := &Config{
