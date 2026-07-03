@@ -71,7 +71,7 @@ func New(deps Deps) *gin.Engine {
 			hardeningTasks.GET("", deps.HardeningHandler.List)
 			hardeningTasks.GET("/:id", deps.HardeningHandler.Get)
 			hardeningTasks.GET("/:id/logs", deps.HardeningHandler.Logs)
-			hardeningTasks.GET("/:id/download-url", deps.HardeningHandler.DownloadURL)
+			hardeningTasks.GET("/:id/download-url", writeRoles, deps.HardeningHandler.DownloadURL)
 		}
 
 		auditLogs := v1.Group("/audit-logs")
