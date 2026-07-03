@@ -68,7 +68,20 @@ func NewHardeningService(
 	}
 }
 
-func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTaskInput) (*HardeningTaskDetail, error) {
+func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTaskInput) (detail *HardeningTaskDetail, err error) {
+	defer func() {
+		if err != nil {
+			s.auditService.Record(RecordAuditInput{
+				ActorUserID: input.CreatedBy,
+				Action:      model.AuditActionHardeningCreate,
+				TargetType:  "app",
+				TargetID:    input.AppID,
+				Detail:      "创建加固任务失败 - " + err.Error(),
+				IP:          input.IP,
+				Success:     false,
+			})
+		}
+	}()
 	_ = ctx
 
 	app, err := s.appRepo.FindByID(input.AppID)

@@ -273,6 +273,158 @@ func TestAppService_DeleteRecordsAuditEntry(t *testing.T) {
 	}
 }
 
+// findAppAuditLogsForTarget queries audit_logs for a given action/targetType
+// (AuditListFilter has no TargetID field) and filters by TargetID client-side,
+// mirroring handler_test's findAuditLogForTarget helper (unavailable here
+// since app_service_test.go lives in package service_test, not handler_test).
+func findAppAuditLogsForTarget(t *testing.T, auditService *service.AuditService, action, targetType string, targetID uint) []model.AuditLog {
+	t.Helper()
+	logs, _, err := auditService.List(repository.AuditListFilter{
+		Action:     action,
+		TargetType: targetType,
+		Page:       1,
+		PageSize:   100,
+	})
+	if err != nil {
+		t.Fatalf("audit List() error = %v", err)
+	}
+	var matches []model.AuditLog
+	for _, l := range logs {
+		if l.TargetID == targetID {
+			matches = append(matches, l)
+		}
+	}
+	return matches
+}
+
+func TestAppService_Upload_UnsupportedExtensionRecordsFailureAuditEntry(t *testing.T) {
+	svc, auditService, marker, actorID := setupAppServiceWithAudit(t)
+	ctx := context.Background()
+	fh := buildFileHeader(t, "file", "audit-bad-ext.exe", []byte("nope"))
+
+	_, err := svc.Upload(ctx, service.UploadInput{
+		FileHeader: fh,
+		Tag:        model.AppTagTool,
+		UploadedBy: actorID,
+		IP:         marker,
+	})
+	if err != service.ErrUnsupportedFileType {
+		t.Fatalf("err = %v, want %v", err, service.ErrUnsupportedFileType)
+	}
+
+	matches := findAppAuditLogsForTarget(t, auditService, string(model.AuditActionAppUpload), "app", 0)
+	if len(matches) != 1 {
+		t.Fatalf("app.upload audit rows for TargetID=0 = %+v, want exactly one", matches)
+	}
+	if matches[0].Success {
+		t.Fatalf("expected Success = false, got row %+v", matches[0])
+	}
+}
+
+func TestAppService_Upload_SuccessRecordsExactlyOneAuditEntry(t *testing.T) {
+	svc, auditService, marker, actorID := setupAppServiceWithAudit(t)
+	ctx := context.Background()
+	fh := buildFileHeader(t, "file", "audit-single-record.aab", []byte("single record bytes"))
+
+	app, err := svc.Upload(ctx, service.UploadInput{
+		FileHeader:        fh,
+		Tag:               model.AppTagTool,
+		ManualPackageName: "com.svcaudittest.singlerecord",
+		ManualVersion:     "1.0.0",
+		UploadedBy:        actorID,
+		IP:                marker,
+	})
+	if err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Delete(ctx, app.ID, actorID, marker) })
+
+	matches := findAppAuditLogsForTarget(t, auditService, string(model.AuditActionAppUpload), "app", app.ID)
+	if len(matches) != 1 {
+		t.Fatalf("app.upload audit rows for TargetID=%d = %+v, want exactly one (no double-recording)", app.ID, matches)
+	}
+	if !matches[0].Success {
+		t.Fatalf("expected Success = true, got row %+v", matches[0])
+	}
+}
+
+func TestAppService_Delete_NonexistentAppRecordsFailureAuditEntry(t *testing.T) {
+	svc, auditService, marker, actorID := setupAppServiceWithAudit(t)
+	ctx := context.Background()
+
+	nonexistentID := uint(time.Now().UnixNano()%1_000_000_000 + 900_000_000)
+
+	err := svc.Delete(ctx, nonexistentID, actorID, marker)
+	if err != service.ErrAppNotFound {
+		t.Fatalf("err = %v, want %v", err, service.ErrAppNotFound)
+	}
+
+	matches := findAppAuditLogsForTarget(t, auditService, string(model.AuditActionAppDelete), "app", nonexistentID)
+	if len(matches) != 1 {
+		t.Fatalf("app.delete audit rows for TargetID=%d = %+v, want exactly one", nonexistentID, matches)
+	}
+	if matches[0].Success {
+		t.Fatalf("expected Success = false, got row %+v", matches[0])
+	}
+}
+
+func TestAppService_Delete_ActiveHardeningTaskRecordsFailureAuditEntry(t *testing.T) {
+	svc, auditService, marker, actorID := setupAppServiceWithAudit(t)
+	ctx := context.Background()
+	fh := buildFileHeader(t, "file", "audit-active-task.aab", []byte("active task bytes"))
+
+	app, err := svc.Upload(ctx, service.UploadInput{
+		FileHeader:        fh,
+		Tag:               model.AppTagTool,
+		ManualPackageName: "com.svcaudittest.activetask",
+		ManualVersion:     "1.0.0",
+		UploadedBy:        actorID,
+		IP:                marker,
+	})
+	if err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+
+	database, err := db.Connect(&config.Config{
+		DBHost: "localhost", DBPort: "5432",
+		DBUser: "root", DBPassword: "root",
+		DBName: "beetleshield", DBSSLMode: "disable",
+	})
+	if err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	hardeningRepo := repository.NewHardeningRepository(database)
+	task := &model.HardeningTask{
+		TaskNo:           fmt.Sprintf("svc-appdel-%d", time.Now().UnixNano()),
+		AppID:            app.ID,
+		Status:           model.HardeningTaskStatusQueued,
+		StrategyName:     "默认加固模板",
+		StrategySnapshot: model.Strategy{DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP},
+		CreatedBy:        actorID,
+	}
+	if err := hardeningRepo.CreateTaskWithStepsForApp(task, model.AppStatusProcessing); err != nil {
+		t.Fatalf("CreateTaskWithStepsForApp() error = %v", err)
+	}
+	t.Cleanup(func() {
+		database.Exec(`DELETE FROM hardening_steps WHERE task_id = ?`, task.ID)
+		database.Exec(`DELETE FROM hardening_tasks WHERE id = ?`, task.ID)
+		_ = svc.Delete(ctx, app.ID, actorID, marker)
+	})
+
+	err = svc.Delete(ctx, app.ID, actorID, marker)
+	if err != service.ErrAppHasActiveHardeningTask {
+		t.Fatalf("err = %v, want %v", err, service.ErrAppHasActiveHardeningTask)
+	}
+
+	matches := findAppAuditLogsForTarget(t, auditService, string(model.AuditActionAppDelete), "app", app.ID)
+	if len(matches) != 1 {
+		t.Fatalf("app.delete audit rows for TargetID=%d = %+v, want exactly one", app.ID, matches)
+	}
+	if matches[0].Success {
+		t.Fatalf("expected Success = false, got row %+v", matches[0])
+	}
+}
+
 func TestAppService_DownloadURLRecordsAuditEntry(t *testing.T) {
 	svc, auditService, marker, actorID := setupAppServiceWithAudit(t)
 	ctx := context.Background()

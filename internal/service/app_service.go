@@ -52,7 +52,28 @@ func NewAppService(appRepo *repository.AppRepository, hardeningRepo *repository.
 // Upload 是一个处理应用文件上传的方法
 // 它接收上下文和上传输入参数，返回上传的应用模型或错误
 // AppService 的 Upload 方法用于处理应用文件上传
-func (s *AppService) Upload(ctx context.Context, input UploadInput) (*model.App, error) {
+func (s *AppService) Upload(ctx context.Context, input UploadInput) (app *model.App, err error) {
+	defer func() {
+		detail := input.FileHeader.Filename
+		targetID := uint(0)
+		if app != nil {
+			detail = app.Name + " (" + app.PackageName + ")"
+			targetID = app.ID
+		}
+		if err != nil {
+			detail = detail + " - " + err.Error()
+		}
+		s.auditService.Record(RecordAuditInput{
+			ActorUserID: input.UploadedBy,
+			Action:      model.AuditActionAppUpload,
+			TargetType:  "app",
+			TargetID:    targetID,
+			Detail:      detail,
+			IP:          input.IP,
+			Success:     err == nil,
+		})
+	}()
+
 	// 获取上传文件的扩展名并转换为小写
 	ext := strings.ToLower(filepath.Ext(input.FileHeader.Filename))
 	// 检查文件扩展名是否为支持的类型（.apk 或 .aab）
@@ -138,7 +159,7 @@ func (s *AppService) Upload(ctx context.Context, input UploadInput) (*model.App,
 	}
 
 	// 创建应用记录
-	app := &model.App{
+	app = &model.App{
 		Name:        strings.TrimSuffix(input.FileHeader.Filename, ext), // 去除扩展名的文件名
 		PackageName: packageName,
 		Version:     version,
@@ -158,16 +179,6 @@ func (s *AppService) Upload(ctx context.Context, input UploadInput) (*model.App,
 		return nil, fmt.Errorf("save app record: %w", err)
 	}
 
-	s.auditService.Record(RecordAuditInput{
-		ActorUserID: input.UploadedBy,
-		Action:      model.AuditActionAppUpload,
-		TargetType:  "app",
-		TargetID:    app.ID,
-		Detail:      app.Name + " (" + app.PackageName + ")",
-		IP:          input.IP,
-		Success:     true,
-	})
-
 	// 返回创建的应用记录
 	return app, nil
 }
@@ -184,8 +195,30 @@ func (s *AppService) Get(id uint) (*model.App, error) {
 	return app, nil
 }
 
-func (s *AppService) Delete(ctx context.Context, id uint, actorUserID uint, ip string) error {
+func (s *AppService) Delete(ctx context.Context, id uint, actorUserID uint, ip string) (err error) {
 	app, err := s.appRepo.FindByID(id)
+
+	defer func() {
+		detail := "应用不存在"
+		targetID := id
+		if app != nil {
+			detail = app.Name + " (" + app.PackageName + ")"
+			targetID = app.ID
+		}
+		if err != nil {
+			detail = detail + " - " + err.Error()
+		}
+		s.auditService.Record(RecordAuditInput{
+			ActorUserID: actorUserID,
+			Action:      model.AuditActionAppDelete,
+			TargetType:  "app",
+			TargetID:    targetID,
+			Detail:      detail,
+			IP:          ip,
+			Success:     err == nil,
+		})
+	}()
+
 	if err != nil {
 		return ErrAppNotFound
 	}
@@ -202,15 +235,6 @@ func (s *AppService) Delete(ctx context.Context, id uint, actorUserID uint, ip s
 		return fmt.Errorf("delete app record: %w", err)
 	}
 	_ = s.storage.DeleteObject(ctx, app.ObjectKey)
-	s.auditService.Record(RecordAuditInput{
-		ActorUserID: actorUserID,
-		Action:      model.AuditActionAppDelete,
-		TargetType:  "app",
-		TargetID:    app.ID,
-		Detail:      app.Name + " (" + app.PackageName + ")",
-		IP:          ip,
-		Success:     true,
-	})
 	return nil
 }
 

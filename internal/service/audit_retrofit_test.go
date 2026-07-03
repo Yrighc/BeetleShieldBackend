@@ -76,8 +76,21 @@ func TestStrategyService_SaveRecordsAuditAndValidationFailureDoesNot(t *testing.
 		t.Fatalf("Save() validation error = %v, want %v", err, service.ErrInvalidDexLevel)
 	}
 	logs = findAuditLogs(t, auditService, actorID, model.AuditActionStrategySave)
-	if len(logs) != 1 {
-		t.Fatalf("validation failure should not create audit row, got %+v", logs)
+	// Failure-audit retrofit (Task 4): a validation failure now also records
+	// an audit row (Success:false), in addition to the earlier successful
+	// Save() row above — so we expect 2 rows total, with the second being
+	// the failure entry with TargetID 0 (no strategy object was persisted).
+	if len(logs) != 2 {
+		t.Fatalf("expected success row + failure row after validation failure, got %+v", logs)
+	}
+	var failureRows []model.AuditLog
+	for _, row := range logs {
+		if !row.Success {
+			failureRows = append(failureRows, row)
+		}
+	}
+	if len(failureRows) != 1 || failureRows[0].TargetID != 0 || failureRows[0].TargetType != "strategy" {
+		t.Fatalf("unexpected failure audit row: %+v", failureRows)
 	}
 }
 
@@ -108,8 +121,20 @@ func TestUserService_CreateUpdateStatusRecordsAudit(t *testing.T) {
 		t.Fatalf("duplicate Create() error = %v, want %v", err, service.ErrEmailAlreadyExists)
 	}
 	createLogs = findAuditLogs(t, auditService, actorID, model.AuditActionUserCreate)
-	if len(createLogs) != 1 {
-		t.Fatalf("duplicate create should not create audit row, got %+v", createLogs)
+	// Failure-audit retrofit (Task 5): a duplicate-email failure now also
+	// records an audit row (Success:false), in addition to the earlier
+	// successful Create() row above — so we expect 2 rows total.
+	if len(createLogs) != 2 {
+		t.Fatalf("expected success row + failure row after duplicate create, got %+v", createLogs)
+	}
+	var createFailureRows []model.AuditLog
+	for _, row := range createLogs {
+		if !row.Success {
+			createFailureRows = append(createFailureRows, row)
+		}
+	}
+	if len(createFailureRows) != 1 || createFailureRows[0].TargetID != 0 || createFailureRows[0].TargetType != "user" {
+		t.Fatalf("unexpected user create failure audit row: %+v", createFailureRows)
 	}
 
 	newName := "审计用户已编辑"
