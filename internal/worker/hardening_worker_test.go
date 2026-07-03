@@ -916,3 +916,31 @@ func countString(values []string, target string) int {
 	}
 	return count
 }
+
+func TestHardeningWorker_ProcessNextPersistsAppRiskLevel(t *testing.T) {
+	database, w, repo, appRepo, storage, _, scope := setupWorkerTest(t)
+	task := createWorkerTask(t, database, repo, appRepo, storage, scope, "risklevel")
+
+	processed, err := w.ProcessNext(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessNext() error = %v", err)
+	}
+	if !processed {
+		t.Fatal("processed = false, want true")
+	}
+
+	app, err := appRepo.FindByID(task.AppID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if app.RiskLevel == nil {
+		t.Fatal("app.RiskLevel = nil, want medium")
+	}
+	// createWorkerTask's StrategySnapshot is {DexLevel: high, SoShell: vmp,
+	// RootDetect: true, Signature: true}: antiDebugEnvScore=15 (RootDetect),
+	// hookScore=0, sigScore=15, dexPoints=20 (high), soPoints=20 (vmp),
+	// encryptPoints=0 -> sum=70 -> afterScore=30 -> medium (25<=30<50).
+	if *app.RiskLevel != model.RiskLevelMedium {
+		t.Fatalf("app.RiskLevel = %q, want %q", *app.RiskLevel, model.RiskLevelMedium)
+	}
+}

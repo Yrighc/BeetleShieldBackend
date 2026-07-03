@@ -222,7 +222,7 @@ func TestHardeningService_DownloadURLRecordsAuditEntry(t *testing.T) {
 	if err := hardeningRepo.MarkTaskRunning(detail.Task.ID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	if err := hardeningRepo.CompleteTaskForApp(detail.Task.ID, "hardening/unsigned-download.apk", 10, "abc", "", 0, "", now); err != nil {
+	if err := hardeningRepo.CompleteTaskForApp(detail.Task.ID, "hardening/unsigned-download.apk", 10, "abc", "", 0, "", now, model.RiskLevelLow); err != nil {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 

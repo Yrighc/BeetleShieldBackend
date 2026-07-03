@@ -334,7 +334,7 @@ func TestHardeningService_DownloadURLArtifacts(t *testing.T) {
 	if err := repo.MarkTaskRunning(detail.Task.ID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	if err := repo.CompleteTaskForApp(detail.Task.ID, "hardening/unsigned.apk", 10, "abc", "hardening/signed.apk", 11, "def", now); err != nil {
+	if err := repo.CompleteTaskForApp(detail.Task.ID, "hardening/unsigned.apk", 10, "abc", "hardening/signed.apk", 11, "def", now, model.RiskLevelLow); err != nil {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 
@@ -494,7 +494,7 @@ func TestHardeningService_GetReportOnCompletedTask(t *testing.T) {
 	if err := repo.MarkTaskRunning(detail.Task.ID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	if err := repo.CompleteTaskForApp(detail.Task.ID, "unsigned.apk", 10, "abc", "signed.apk", 11, "def", now); err != nil {
+	if err := repo.CompleteTaskForApp(detail.Task.ID, "unsigned.apk", 10, "abc", "signed.apk", 11, "def", now, model.RiskLevelLow); err != nil {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 

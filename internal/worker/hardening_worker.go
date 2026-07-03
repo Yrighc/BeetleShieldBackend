@@ -290,7 +290,8 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 	}
 
 	now := time.Now()
-	if err := w.repo.CompleteTaskForApp(task.ID, unsigned.ObjectKey, unsigned.Size, unsigned.SHA256, signed.ObjectKey, signed.Size, signed.SHA256, now); err != nil {
+	riskLevel := service.ResolveRiskLevel(task.StrategySnapshot)
+	if err := w.repo.CompleteTaskForApp(task.ID, unsigned.ObjectKey, unsigned.Size, unsigned.SHA256, signed.ObjectKey, signed.Size, signed.SHA256, now, riskLevel); err != nil {
 		return fmt.Errorf("persist task completion: %w", err)
 	}
 

@@ -347,7 +347,7 @@ func TestHardeningHandler_ReadRoutesAllowAuditor(t *testing.T) {
 	if err := repo.MarkTaskRunning(taskID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	if err := repo.CompleteTaskForApp(taskID, "handler/unsigned.apk", 10, "abc", "", 0, "", now); err != nil {
+	if err := repo.CompleteTaskForApp(taskID, "handler/unsigned.apk", 10, "abc", "", 0, "", now, model.RiskLevelLow); err != nil {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 
@@ -448,7 +448,7 @@ func TestHardeningHandler_GetReportOnCompletedTaskAllowsAuditor(t *testing.T) {
 	if err := hardeningRepo.MarkTaskRunning(created.Data.Task.ID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	if err := hardeningRepo.CompleteTaskForApp(created.Data.Task.ID, "unsigned.apk", 10, "abc", "signed.apk", 11, "def", now); err != nil {
+	if err := hardeningRepo.CompleteTaskForApp(created.Data.Task.ID, "unsigned.apk", 10, "abc", "signed.apk", 11, "def", now, model.RiskLevelLow); err != nil {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 
@@ -520,7 +520,7 @@ func TestHardeningHandler_DownloadURLRequiresAdminOrDeveloperRole(t *testing.T) 
 	if err := repo.MarkTaskRunning(taskID, now); err != nil {
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
-	if err := repo.CompleteTaskForApp(taskID, "handler/rbac-unsigned.apk", 10, "abc", "", 0, "", now); err != nil {
+	if err := repo.CompleteTaskForApp(taskID, "handler/rbac-unsigned.apk", 10, "abc", "", 0, "", now, model.RiskLevelLow); err != nil {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 

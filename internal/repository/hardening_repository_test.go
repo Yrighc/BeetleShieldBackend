@@ -414,7 +414,7 @@ func TestHardeningRepository_CompleteTaskForAppUpdatesTaskAndAppAtomically(t *te
 		t.Fatalf("MarkTaskRunning() error = %v", err)
 	}
 
-	if err := repo.CompleteTaskForApp(task.ID, "unsigned.apk", 12, "abc", "signed.apk", 13, "def", now.Add(time.Second)); err != nil {
+	if err := repo.CompleteTaskForApp(task.ID, "unsigned.apk", 12, "abc", "signed.apk", 13, "def", now.Add(time.Second), model.RiskLevelHigh); err != nil {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 
@@ -432,6 +432,9 @@ func TestHardeningRepository_CompleteTaskForAppUpdatesTaskAndAppAtomically(t *te
 	}
 	if foundApp.Status != model.AppStatusCompleted {
 		t.Fatalf("app status = %s, want completed", foundApp.Status)
+	}
+	if foundApp.RiskLevel == nil || *foundApp.RiskLevel != model.RiskLevelHigh {
+		t.Fatalf("app risk level = %v, want %q", foundApp.RiskLevel, model.RiskLevelHigh)
 	}
 }
 

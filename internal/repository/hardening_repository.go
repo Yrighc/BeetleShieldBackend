@@ -152,7 +152,7 @@ func (r *HardeningRepository) RecordArtifacts(taskID uint, unsignedKey string, u
 		}))
 }
 
-func (r *HardeningRepository) CompleteTaskForApp(taskID uint, unsignedKey string, unsignedSize int64, unsignedSHA string, signedKey string, signedSize int64, signedSHA string, finishedAt time.Time) error {
+func (r *HardeningRepository) CompleteTaskForApp(taskID uint, unsignedKey string, unsignedSize int64, unsignedSHA string, signedKey string, signedSize int64, signedSHA string, finishedAt time.Time, riskLevel model.RiskLevel) error {
 	return r.transitionTaskForApp(taskID, model.HardeningTaskStatusRunning, map[string]interface{}{
 		"status":                 model.HardeningTaskStatusCompleted,
 		"unsigned_object_key":    unsignedKey,
@@ -163,7 +163,10 @@ func (r *HardeningRepository) CompleteTaskForApp(taskID uint, unsignedKey string
 		"signed_test_sha256":     signedSHA,
 		"finished_at":            finishedAt,
 		"error_summary":          "",
-	}, model.AppStatusCompleted)
+	}, map[string]interface{}{
+		"status":     model.AppStatusCompleted,
+		"risk_level": riskLevel,
+	})
 }
 
 // failedTaskArtifactFields clears every artifact reference a task might carry.
@@ -190,7 +193,9 @@ func (r *HardeningRepository) FailTaskForApp(taskID uint, summary string, finish
 	for k, v := range failedTaskArtifactFields {
 		updates[k] = v
 	}
-	return r.transitionTaskForApp(taskID, model.HardeningTaskStatusRunning, updates, model.AppStatusFailed)
+	return r.transitionTaskForApp(taskID, model.HardeningTaskStatusRunning, updates, map[string]interface{}{
+		"status": model.AppStatusFailed,
+	})
 }
 
 // RecoverRunningTasks marks any task left in "running" (e.g. after a crash)
@@ -225,7 +230,9 @@ func (r *HardeningRepository) RecoverRunningTasks(summary string) ([]model.Harde
 			for k, v := range failedTaskArtifactFields {
 				taskUpdates[k] = v
 			}
-			if err := transitionTaskForAppTx(tx, task.ID, task.AppID, model.HardeningTaskStatusRunning, taskUpdates, model.AppStatusFailed); err != nil {
+			if err := transitionTaskForAppTx(tx, task.ID, task.AppID, model.HardeningTaskStatusRunning, taskUpdates, map[string]interface{}{
+				"status": model.AppStatusFailed,
+			}); err != nil {
 				return err
 			}
 		}
@@ -249,17 +256,17 @@ func (r *HardeningRepository) RecoverRunningTasks(summary string) ([]model.Harde
 	return recovered, nil
 }
 
-func (r *HardeningRepository) transitionTaskForApp(taskID uint, expectedStatus model.HardeningTaskStatus, taskUpdates map[string]interface{}, appStatus model.AppStatus) error {
+func (r *HardeningRepository) transitionTaskForApp(taskID uint, expectedStatus model.HardeningTaskStatus, taskUpdates map[string]interface{}, appUpdates map[string]interface{}) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		task, err := lockHardeningTask(tx, taskID)
 		if err != nil {
 			return err
 		}
-		return transitionTaskForAppTx(tx, task.ID, task.AppID, expectedStatus, taskUpdates, appStatus)
+		return transitionTaskForAppTx(tx, task.ID, task.AppID, expectedStatus, taskUpdates, appUpdates)
 	})
 }
 
-func transitionTaskForAppTx(tx *gorm.DB, taskID uint, appID uint, expectedStatus model.HardeningTaskStatus, taskUpdates map[string]interface{}, appStatus model.AppStatus) error {
+func transitionTaskForAppTx(tx *gorm.DB, taskID uint, appID uint, expectedStatus model.HardeningTaskStatus, taskUpdates map[string]interface{}, appUpdates map[string]interface{}) error {
 	if err := requireUpdatedRow(tx.Model(&model.HardeningTask{}).
 		Where("id = ? AND status = ?", taskID, expectedStatus).
 		Updates(taskUpdates)); err != nil {
@@ -267,7 +274,7 @@ func transitionTaskForAppTx(tx *gorm.DB, taskID uint, appID uint, expectedStatus
 	}
 	return requireUpdatedRow(tx.Model(&model.App{}).
 		Where("id = ?", appID).
-		Update("status", appStatus))
+		Updates(appUpdates))
 }
 
 func lockHardeningTask(tx *gorm.DB, taskID uint) (*model.HardeningTask, error) {
