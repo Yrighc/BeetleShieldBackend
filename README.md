@@ -95,16 +95,19 @@ The default test suite does not run `dpt.jar`. To test the real engine locally:
 
 ## Docker 化部署
 
-应用本身（API server + 加固 worker + `dpt.jar` + JRE）也可以打包进 Docker，跟
-`postgres`/`minio` 一起用 `docker compose` 整体部署，放在 `full` compose
-profile 下，默认不随 `docker compose up`/`make dev-up` 启动，不影响上面的本地
-开发流程。完整步骤（含 `dpt.jar` 打包要求、环境变量参考、生产注意事项、故障
-排查）见 [`docs/deployment.md`](docs/deployment.md)。
+前端 SPA + API server + 加固 worker + `dpt.jar` + JRE 可以一起打包进**一个**
+Docker 镜像（容器内不需要 nginx），跟 `postgres`/`minio` 一起用
+`docker compose` 整体部署，放在 `full` compose profile 下，默认不随
+`docker compose up`/`make dev-up` 启动，不影响上面的本地开发流程。完整步骤
+（含 `dpt.jar`/前端打包要求、环境变量参考、生产注意事项、故障排查）见
+[`docs/deployment.md`](docs/deployment.md)。
 
 快速上手：
 
 ```bash
 mkdir -p dpt && cp -R /path/to/dpt-shell/executable/{dpt.jar,shell-files,bin} dpt/
+(cd /path/to/BeetleShieldFrontend && npm run build)
+mkdir -p web && cp -R /path/to/BeetleShieldFrontend/dist/. web/
 make docker-up
 ```
 

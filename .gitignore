@@ -7,6 +7,10 @@ dist/
 # a real one here before `docker build` (see README "Docker 化部署").
 /dpt/
 
+# Built frontend SPA (BeetleShieldFrontend's `npm run build` dist/ output),
+# copied here before `docker build` so the image can serve it directly.
+/web/
+
 .DS_Store
 
 .claude

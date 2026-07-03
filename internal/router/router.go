@@ -1,11 +1,17 @@
 package router
 
 import (
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"beetleshield-backend/internal/handler"
 	"beetleshield-backend/internal/middleware"
 	"beetleshield-backend/internal/model"
+	"beetleshield-backend/internal/pkg/response"
 )
 
 type Deps struct {
@@ -18,6 +24,11 @@ type Deps struct {
 	AuditHandler         *handler.AuditHandler
 	APIRequestLogHandler *handler.APIRequestLogHandler
 	RequestLogRecorder   middleware.RequestLogRecorder
+	// StaticDir, when set, serves the frontend's built SPA (index.html +
+	// assets) directly from Gin so a single container can host both the
+	// API and the UI on one port — no nginx needed in front. Left empty in
+	// every existing deployment/test wiring, which keeps them unaffected.
+	StaticDir string
 }
 
 func New(deps Deps) *gin.Engine {
@@ -97,5 +108,31 @@ func New(deps Deps) *gin.Engine {
 		}
 	}
 
+	if deps.StaticDir != "" {
+		r.NoRoute(spaFallback(deps.StaticDir))
+	}
+
 	return r
+}
+
+// spaFallback serves a built frontend SPA: known static files (JS/CSS/
+// images) are served as-is, everything else that isn't an /api/ path falls
+// back to index.html so client-side routing (e.g. /apps/42) works on a
+// hard refresh. filepath.Clean on an absolute URL path can't produce a
+// path outside dir, so this can't be used to escape StaticDir.
+func spaFallback(dir string) gin.HandlerFunc {
+	indexPath := filepath.Join(dir, "index.html")
+	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			response.Error(c, http.StatusNotFound, 40404, "not found")
+			return
+		}
+
+		requested := filepath.Join(dir, filepath.Clean(c.Request.URL.Path))
+		if info, err := os.Stat(requested); err == nil && !info.IsDir() {
+			c.File(requested)
+			return
+		}
+		c.File(indexPath)
+	}
 }

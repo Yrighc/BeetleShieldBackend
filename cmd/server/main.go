@@ -120,6 +120,7 @@ func main() {
 		AuditHandler:         auditHandler,
 		APIRequestLogHandler: apiRequestLogHandler,
 		RequestLogRecorder:   requestLogRecorder,
+		StaticDir:            cfg.StaticDir,
 	})
 
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}

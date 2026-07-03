@@ -1,8 +1,8 @@
 # BeetleShield Backend 部署文档
 
 本文档覆盖两种部署方式的完整流程：本地开发（Go 原生进程 + Docker 依赖）和
-全容器化部署（应用本身也打包进 Docker）。`README.md` 只保留快速上手指引，
-详细配置、故障排查、生产注意事项都在本文档里。
+全容器化部署（前端 + 后端 + 加固引擎一起打包进一个 Docker 镜像）。
+`README.md` 只保留快速上手指引，详细配置、故障排查、生产注意事项都在本文档里。
 
 ## 目录
 
@@ -23,6 +23,11 @@
 - HTTP API server（Gin），监听 `SERVER_PORT`（默认 `8080`）
 - 加固 worker（`internal/worker.HardeningWorker`），每 3 秒轮询一次 `hardening_tasks`
   队列，串行执行加固任务
+- （容器化部署时）前端 SPA 静态文件——设置了 `STATIC_DIR` 时，
+  `internal/router.spaFallback` 会直接用 Gin 把前端打包产物（`index.html` +
+  `assets/`）和 API 一起在同一个端口提供，不需要额外的 nginx 进程，也不需要
+  单独的前端容器。未设置 `STATIC_DIR`（本地开发默认）时只提供 API，跟以前
+  行为完全一致。
 
 外部依赖（必须都能连通）：
 
@@ -57,10 +62,28 @@
 | `DPT_TASK_TIMEOUT_MINUTES` | `60` | 单个加固任务超时时间 |
 | `HARDENING_ENGINE_VERSION` | `BeetleShield Engine v2.4.1` | 写入加固报告的引擎版本号，纯展示用途 |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@beetleshield.com` / `ChangeMe123!` | 首次启动 seed 的默认管理员账号，**登录后应立即改密码** |
+| `STATIC_DIR` | 空（不提供前端） | 前端打包产物目录；容器化部署里由 compose 覆盖为 `/app/web`。本地 `go run` 不设置，前端走 `npm run dev` 单独跑 |
+
+以下几个只在 `docker-compose.yml` 里使用，控制**发布到宿主机**的端口（不是
+容器内部端口），不需要写进 `.env`（容器内部通信不经过这几个端口）——但如果这
+台服务器上还跑着别的项目，端口容易撞车，可以在 `.env` 里加这几行覆盖默认值：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `POSTGRES_HOST_PORT` | `5432` | postgres 发布到宿主机 `127.0.0.1` 的端口 |
+| `MINIO_API_HOST_PORT` | `9000` | minio S3 API 发布到宿主机 `127.0.0.1` 的端口 |
+| `MINIO_CONSOLE_HOST_PORT` | `9001` | minio 管理控制台发布到宿主机 `127.0.0.1` 的端口 |
+| `APP_HOST_PORT` | `8080` | app（前端+API 一体）发布到宿主机 `127.0.0.1` 的端口 |
+
+这几个端口默认只绑定 `127.0.0.1`，不直接对公网暴露——公开访问应该走服务器上
+已有的 nginx/Caddy 之类反向代理到 `127.0.0.1:${APP_HOST_PORT}`，由它去终结
+TLS 并处理这台服务器上其他项目的路由，见
+[生产环境注意事项](#生产环境注意事项)。
 
 ## 方式一：本地开发部署
 
-日常开发用这种方式，`go run` 支持热改代码，比每次改动都重新 build 镜像快得多。
+日常开发用这种方式，`go run` 支持热改代码，前端 `npm run dev` 有 HMR，比每次
+改动都重新 build 镜像快得多。
 
 ```bash
 cp .env.example .env
@@ -69,6 +92,10 @@ cp .env.example .env
 make dev-up      # 启动 postgres:16 + minio（如果本机已有可用实例，跳过这步）
 make run         # go run ./cmd/server，监听 :8080
 ```
+
+前端在 `BeetleShieldFrontend` 仓库里单独 `npm run dev` 启动，走
+`VITE_API_BASE_URL`（默认 `http://localhost:8080/api/v1`）跨源访问后端，不需
+要 `STATIC_DIR`。
 
 首次启动会在日志里看到 seed 管理员账号的确认行。如果本机 5432/9000/9001
 端口已经被其他项目占用（比如已经有别的 Postgres/MinIO 容器在跑），
@@ -81,10 +108,11 @@ test」一节操作，或直接跑 `scripts/smoke_test.sh`。
 
 ## 方式二：全容器化部署
 
-应用本身（server + worker）连同 `dpt.jar` 引擎一起打包进一个 Docker 镜像，
-`docker-compose.yml` 里的 `app` 服务放在 `full` compose profile 下——**默认
-不会随 `docker compose up`/`make dev-up` 启动**，不会打断上面「方式一」的本
-地开发流程。
+前端 SPA + API server + 加固 worker + `dpt.jar` 引擎全部打包进**一个** Docker
+镜像，一个端口对外，容器内部不需要 nginx（`internal/router.spaFallback` 由
+Gin 直接提供前端静态文件）。`docker-compose.yml` 里的 `app` 服务放在 `full`
+compose profile 下——**默认不会随 `docker compose up`/`make dev-up` 启动**，
+不会打断上面「方式一」的本地开发流程。
 
 ### dpt.jar 打包说明
 
@@ -109,6 +137,28 @@ DEX 保护、生成加固后测试签名包，产物里含 `.idsig`），JRE 21
 （`eclipse-temurin:21-jre-jammy`）镜像跑得通，`dpt.jar` 自带纯 Java 的签名
 库自己完成签名。
 
+### 前端打包说明
+
+前端是独立仓库/独立工具链（`BeetleShieldFrontend`，Vite），这个 Dockerfile
+不负责构建它，需要提前在前端仓库里 build 好，把产物拷贝到本仓库的 `./web/`
+（已加入 `.gitignore`，不会被提交）：
+
+```bash
+cd /path/to/BeetleShieldFrontend
+npm run build          # 用的是 .env.production 里 VITE_API_BASE_URL=/api/v1
+                        # （相对路径），不是本地开发用的 http://localhost:8080/api/v1——
+                        # 前后端同源同端口，相对路径才能免配置直接用
+
+cd /path/to/BeetleShieldBackend
+mkdir -p web
+cp -R /path/to/BeetleShieldFrontend/dist/. web/
+```
+
+`VITE_API_BASE_URL` 是 Vite 编译期就写死进 JS 产物的，不是运行时可改的环境
+变量——`BeetleShieldFrontend/.env.production` 已经配好相对路径
+`/api/v1`，`npm run build` 默认走 production mode 会自动用这份文件，不需要
+额外传参。
+
 ### 构建与启动
 
 ```bash
@@ -119,12 +169,13 @@ make docker-up          # 构建并启动 postgres + minio + app
 make docker-down        # 停止并移除这三个服务的容器（不删数据卷）
 ```
 
-`app` 容器里以下三个变量由 `docker-compose.yml` 的 `environment:` 强制覆盖为
+`app` 容器里以下四个变量由 `docker-compose.yml` 的 `environment:` 强制覆盖为
 容器网络内的地址，会覆盖 `.env` 文件里对应的值：
 
 - `DB_HOST=postgres`
 - `MINIO_ENDPOINT=minio:9000`
 - `DPT_JAR_PATH=/opt/dpt/dpt.jar`
+- `STATIC_DIR=/app/web`
 
 其余配置（`JWT_SECRET`、`ADMIN_EMAIL`、`DPT_TASK_TIMEOUT_MINUTES` 等）仍从
 挂载进容器的本地 `.env` 文件读取——`cmd/server/main.go` 读的是字面量 `./.env`
@@ -142,6 +193,9 @@ make docker-down        # 停止并移除这三个服务的容器（不删数据
 curl http://localhost:8080/health
 # {"status":"ok"}
 
+curl -s http://localhost:8080/ | head -5
+# 应该能看到前端 index.html 的内容（<!doctype html> ...），不是 API 的 JSON
+
 docker compose --profile full logs app --tail 50
 # 应该能看到：
 #   seeded default admin account: ...
@@ -156,6 +210,9 @@ curl -s -X POST http://localhost:8080/api/v1/auth/login \
   -d '{"email":"<ADMIN_EMAIL>","password":"<ADMIN_PASSWORD>"}'
 ```
 
+浏览器直接打开 `http://<部署地址>:8080/`，应该能看到登录页并且能正常登录——
+前端请求走的是同源相对路径 `/api/v1/...`，不会有跨域问题。
+
 要验证加固引擎本身是否可用，参考 README「Manual hardening smoke test」，
 用返回的 token 走一遍上传 APK → 创建加固任务 → 轮询任务状态的完整流程。
 
@@ -169,8 +226,11 @@ curl -s -X POST http://localhost:8080/api/v1/auth/login \
 - **默认管理员密码**：`ADMIN_EMAIL`/`ADMIN_PASSWORD` 只在 `users` 表为空时
   seed 一次，登录后应立即改密码；不要在生产 `.env` 里保留
   `.env.example` 的默认值。
-- **反向代理 / HTTPS**：`app` 容器本身只监听 HTTP `:8080`，生产环境建议在前面
-  加一层 Nginx/Caddy/云厂商负载均衡终结 TLS，不要直接把 8080 暴露给公网。
+- **反向代理 / HTTPS**：`app` 容器发布到宿主机的端口默认只绑定 `127.0.0.1`
+  （见 [环境变量参考](#环境变量参考) 里的 `APP_HOST_PORT`），不直接对公网暴露。
+  如果这台服务器还托管其他项目，通常已经有一个统一的 nginx/Caddy 在管理
+  多个项目的域名和 TLS——把它指向 `127.0.0.1:${APP_HOST_PORT}` 反代进来即可，
+  不需要再单独为这个项目起一个 nginx 容器（前端已经在 `app` 容器里直接提供了）。
 - **`DB_SSLMODE`**：连接托管数据库（非本机 Docker 里的 `postgres:16`）时按需
   改成 `require` 或更严格的模式。
 - **上传大小限制**：`MAX_UPLOAD_SIZE_MB` 默认 4096（4GB），如果前面有反向代理，
@@ -197,7 +257,7 @@ docker compose --profile full down -v   # 加 -v 才会删 volume，谨慎使用
 
 ## 更新部署
 
-代码或依赖变更后，镜像不会自动更新，需要重新 build：
+后端代码变更后，镜像不会自动更新，需要重新 build：
 
 ```bash
 git pull
@@ -205,7 +265,12 @@ make docker-build
 make docker-up   # docker-up 自带 --build，等价于 build + up -d
 ```
 
-只改了 `.env` 里的配置（不涉及代码或 `dpt.jar`）：
+前端代码变更：重新走一遍
+[前端打包说明](#前端打包说明)（`npm run build` + 拷贝到 `./web/`），再
+`make docker-build && make docker-up`——前端产物是构建期 `COPY` 进镜像的，不
+是挂载卷，改完 `web/` 目录本身不会让运行中的容器生效。
+
+只改了 `.env` 里的配置（不涉及代码、`dpt.jar` 或前端产物）：
 
 ```bash
 docker compose --profile full restart app
@@ -213,15 +278,27 @@ docker compose --profile full restart app
 
 ## 常见问题排查
 
-**`make dev-up`/`make docker-up` 报端口冲突（5432/9000/9001 already in
-use）**：本机已经有其他 Postgres/MinIO 容器占用这些端口（团队机器上常见，比如
-`pg12-dev`/`minio-dev` 之类别的项目在用）。要么修改 `docker-compose.yml` 里冲
-突服务的端口映射，要么直接把 `.env`（本地开发）或 compose 里 `app.environment`
-（全容器化部署）指向已有实例，跳过本仓库自带的 `postgres`/`minio` 服务。
+**`make dev-up`/`make docker-up` 报端口冲突**：本机已经有其他 Postgres/MinIO
+容器占用这些端口（团队机器上常见，比如 `pg12-dev`/`minio-dev` 之类别的项目在
+用）。本地开发（方式一）跳过 `make dev-up`，直接把 `.env` 指向已有实例；全容
+器化部署（方式二）在 `.env` 里覆盖 `POSTGRES_HOST_PORT`/`MINIO_API_HOST_PORT`/
+`MINIO_CONSOLE_HOST_PORT`/`APP_HOST_PORT` 改用其他端口，不需要改
+`docker-compose.yml`。
 
 **加固任务一直失败，日志里有 `Cannot find directory: shell-files`**：
 `./dpt/` 目录下只有 `dpt.jar`，缺了 `shell-files/`、`bin/` 这两个配套目录，
 按上面「dpt.jar 打包说明」重新拷全，然后 `make docker-build` 重新构建镜像。
+
+**访问 `/` 是 404 或者空白页，`/api/*` 正常**：`./web/` 目录是空的或者不存在
+（`STATIC_DIR` 指向的目录里没有 `index.html`），按上面「前端打包说明」重新走
+一遍 `npm run build` + 拷贝，然后 `make docker-build` 重新构建镜像——前端产物
+是 `COPY` 进镜像的，不是挂载卷，只有目录内容对不代表镜像里也更新了。
+
+**前端页面能打开，但登录/接口请求全部失败（跨域或者 404）**：前端 build 的
+时候没有用相对路径的 `VITE_API_BASE_URL`。检查
+`BeetleShieldFrontend/.env.production` 是否存在且内容是
+`VITE_API_BASE_URL=/api/v1`，确认 `npm run build` 前该文件确实存在，重新
+build 并拷贝到 `./web/`。
 
 **`app` 容器日志里报 `password authentication failed`**：挂载进容器的
 `.env` 里 `DB_USER`/`DB_PASSWORD` 跟 `docker-compose.yml` 里 `postgres`

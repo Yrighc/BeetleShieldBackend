@@ -36,6 +36,12 @@ type Config struct {
 
 	AdminEmail    string
 	AdminPassword string
+
+	// StaticDir, when non-empty, makes the server also host the frontend
+	// SPA (see internal/router.spaFallback) instead of API-only. Left
+	// unset (default "") for local `go run` dev, where the frontend runs
+	// separately via `npm run dev`.
+	StaticDir string
 }
 
 func Load(path string) (*Config, error) {
@@ -81,6 +87,7 @@ func Load(path string) (*Config, error) {
 		HardeningEngineVersion: v.GetString("HARDENING_ENGINE_VERSION"),
 		AdminEmail:             v.GetString("ADMIN_EMAIL"),
 		AdminPassword:          v.GetString("ADMIN_PASSWORD"),
+		StaticDir:              v.GetString("STATIC_DIR"),
 	}
 
 	if cfg.JWTSecret == "" {

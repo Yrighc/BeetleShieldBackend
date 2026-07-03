@@ -8,7 +8,11 @@ services:
       POSTGRES_PASSWORD: beetleshield
       POSTGRES_DB: beetleshield
     ports:
-      - "5432:5432"
+      # Host-published port is configurable and loopback-only by default —
+      # a shared server running several projects will fight over the bare
+      # 5432/9000/9001 defaults otherwise. Override POSTGRES_HOST_PORT etc.
+      # in .env if this host already has something on the default port.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - beetleshield_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,8 +30,8 @@ services:
       MINIO_ROOT_USER: beetleshield
       MINIO_ROOT_PASSWORD: beetleshield123
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:${MINIO_API_HOST_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
     volumes:
       - beetleshield_minio_data:/data
     healthcheck:
@@ -36,11 +40,16 @@ services:
       timeout: 5s
       retries: 10
 
-  # Packaged app (server + hardening worker + dpt.jar), opt-in via the
-  # "full" profile so `make dev-up` (bare `docker compose up`) keeps only
-  # starting the postgres/minio dependencies, unchanged from before — this
-  # service is for full-stack deployment (`make docker-up`), not local Go
-  # development where `make run` is faster to iterate on.
+  # Packaged app: server + hardening worker + dpt.jar + the built frontend
+  # SPA, all in one container on one port (internal/router.spaFallback
+  # serves the frontend directly, no nginx inside or in front of this
+  # container is required). Opt-in via the "full" profile so `make dev-up`
+  # (bare `docker compose up`) keeps only starting the postgres/minio
+  # dependencies, unchanged from before — this service is for full-stack
+  # deployment (`make docker-up`), not local dev where `make run` (backend)
+  # + `npm run dev` (frontend) is faster to iterate on. If this host already
+  # runs its own nginx in front of several projects, point it at
+  # 127.0.0.1:${APP_HOST_PORT} instead of exposing this container directly.
   app:
     build: .
     container_name: beetleshield-app
@@ -55,6 +64,7 @@ services:
       DB_HOST: postgres
       MINIO_ENDPOINT: minio:9000
       DPT_JAR_PATH: /opt/dpt/dpt.jar
+      STATIC_DIR: /app/web
     volumes:
       # cmd/server/main.go loads config from a literal ./.env file (not just
       # process env vars), so it must exist inside the container too — the
@@ -64,7 +74,10 @@ services:
       - ./.env:/app/.env:ro
       - beetleshield_dpt_work_data:/tmp/beetleshield-hardening
     ports:
-      - "8080:8080"
+      # Loopback-only: the host's own nginx reverse-proxies to this port
+      # (and terminates TLS / owns the public :80/:443), the container
+      # itself is never exposed directly to the internet.
+      - "127.0.0.1:${APP_HOST_PORT:-8080}:8080"
 
 volumes:
   beetleshield_postgres_data:
