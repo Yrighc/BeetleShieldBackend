@@ -89,6 +89,7 @@ func main() {
 		storageClient,
 		cfg.DPTDefaultVMPRules,
 		auditService,
+		cfg.HardeningEngineVersion,
 	)
 	hardeningHandler := handler.NewHardeningHandler(hardeningService)
 	hardeningWorker := worker.NewHardeningWorker(
