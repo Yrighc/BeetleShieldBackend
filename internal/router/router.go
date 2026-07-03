@@ -9,13 +9,15 @@ import (
 )
 
 type Deps struct {
-	JWTSecret        string
-	AuthHandler      *handler.AuthHandler
-	AppHandler       *handler.AppHandler
-	UserHandler      *handler.UserHandler
-	StrategyHandler  *handler.StrategyHandler
-	HardeningHandler *handler.HardeningHandler
-	AuditHandler     *handler.AuditHandler
+	JWTSecret            string
+	AuthHandler          *handler.AuthHandler
+	AppHandler           *handler.AppHandler
+	UserHandler          *handler.UserHandler
+	StrategyHandler      *handler.StrategyHandler
+	HardeningHandler     *handler.HardeningHandler
+	AuditHandler         *handler.AuditHandler
+	APIRequestLogHandler *handler.APIRequestLogHandler
+	RequestLogRecorder   middleware.RequestLogRecorder
 }
 
 func New(deps Deps) *gin.Engine {
@@ -27,6 +29,7 @@ func New(deps Deps) *gin.Engine {
 	})
 
 	v1 := r.Group("/api/v1")
+	v1.Use(middleware.RequestLog(deps.RequestLogRecorder))
 	{
 		auth := v1.Group("/auth")
 		{
@@ -71,13 +74,19 @@ func New(deps Deps) *gin.Engine {
 			hardeningTasks.GET("", deps.HardeningHandler.List)
 			hardeningTasks.GET("/:id", deps.HardeningHandler.Get)
 			hardeningTasks.GET("/:id/logs", deps.HardeningHandler.Logs)
-			hardeningTasks.GET("/:id/download-url", deps.HardeningHandler.DownloadURL)
+			hardeningTasks.GET("/:id/download-url", writeRoles, deps.HardeningHandler.DownloadURL)
 		}
 
 		auditLogs := v1.Group("/audit-logs")
 		auditLogs.Use(middleware.JWTAuth(deps.JWTSecret))
 		{
 			auditLogs.GET("", deps.AuditHandler.List)
+		}
+
+		apiLogs := v1.Group("/api-logs")
+		apiLogs.Use(middleware.JWTAuth(deps.JWTSecret))
+		{
+			apiLogs.GET("", deps.APIRequestLogHandler.List)
 		}
 	}
 

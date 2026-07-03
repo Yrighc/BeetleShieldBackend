@@ -81,6 +81,12 @@ func cleanupHardeningHandlerTestData(t *testing.T, database *gorm.DB, scope hard
 		)
 	`, scope.packageNamePrefix()+".%")
 	database.Unscoped().Where("package_name LIKE ?", scope.packageNamePrefix()+".%").Delete(&model.App{})
+	database.Exec(`
+		DELETE FROM audit_logs
+		WHERE actor_user_id IN (
+			SELECT id FROM users WHERE email IN (?, ?, ?)
+		)
+	`, scope.email("admin"), scope.email("developer"), scope.email("auditor"))
 	database.Unscoped().Where("email IN ?", []string{
 		scope.email("admin"),
 		scope.email("developer"),
@@ -88,7 +94,7 @@ func cleanupHardeningHandlerTestData(t *testing.T, database *gorm.DB, scope hard
 	}).Delete(&model.User{})
 }
 
-func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, string, uint, *repository.HardeningRepository, func()) {
+func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, string, uint, *repository.HardeningRepository, *repository.AuditRepository, func()) {
 	t.Helper()
 	scope := newHardeningHandlerTestScope()
 
@@ -146,7 +152,10 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		}
 	}
 
-	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, nil)
+	auditRepo := repository.NewAuditRepository(database)
+	auditService := service.NewAuditService(auditRepo)
+
+	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, auditService)
 	adminToken, _, err := authSvc.Login(users[0].Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("admin Login() error = %v", err)
@@ -176,7 +185,7 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		t.Fatalf("create app: %v", err)
 	}
 
-	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), nil)
+	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), auditService)
 	hardeningRepo := repository.NewHardeningRepository(database)
 	hardeningSvc := service.NewHardeningService(
 		hardeningRepo,
@@ -184,7 +193,7 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		strategySvc,
 		fakeHardeningHandlerURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
-		nil,
+		auditService,
 	)
 	hardeningHandler := handler.NewHardeningHandler(hardeningSvc)
 
@@ -199,11 +208,11 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		srv.Close()
 		cleanupHardeningHandlerTestData(t, database, scope)
 	}
-	return srv, adminToken, developerToken, auditorToken, app.ID, hardeningRepo, cleanup
+	return srv, adminToken, developerToken, auditorToken, app.ID, hardeningRepo, auditRepo, cleanup
 }
 
 func TestHardeningHandler_CreateAllowsDeveloperAndRejectsAuditor(t *testing.T) {
-	srv, _, developerToken, auditorToken, appID, _, cleanup := setupHardeningRouter(t)
+	srv, _, developerToken, auditorToken, appID, _, auditRepo, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, err := json.Marshal(map[string]interface{}{
@@ -242,6 +251,14 @@ func TestHardeningHandler_CreateAllowsDeveloperAndRejectsAuditor(t *testing.T) {
 		t.Fatalf("advanced flags not preserved: %+v", created.Data.Task)
 	}
 
+	createLog := findAuditLogForTarget(t, auditRepo, string(model.AuditActionHardeningCreate), "hardening_task", created.Data.Task.ID)
+	if createLog.ActorUserID == 0 {
+		t.Fatal("hardening_task.create audit entry has zero ActorUserID: the authenticated caller's ID from the JWT never reached the audit row")
+	}
+	if createLog.IP != "127.0.0.1" {
+		t.Fatalf("hardening_task.create audit entry IP = %q, want the real client IP as seen by the HTTP server", createLog.IP)
+	}
+
 	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/hardening-tasks", bytes.NewReader(body))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("Authorization", "Bearer "+auditorToken)
@@ -256,7 +273,7 @@ func TestHardeningHandler_CreateAllowsDeveloperAndRejectsAuditor(t *testing.T) {
 }
 
 func TestHardeningHandler_CreateReturnsConflictForDuplicateActiveTask(t *testing.T) {
-	srv, _, developerToken, _, appID, _, cleanup := setupHardeningRouter(t)
+	srv, _, developerToken, _, appID, _, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, err := json.Marshal(map[string]interface{}{"appId": appID})
@@ -285,7 +302,7 @@ func TestHardeningHandler_CreateReturnsConflictForDuplicateActiveTask(t *testing
 }
 
 func TestHardeningHandler_ReadRoutesAllowAuditor(t *testing.T) {
-	srv, adminToken, _, auditorToken, appID, repo, cleanup := setupHardeningRouter(t)
+	srv, adminToken, _, auditorToken, appID, repo, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, err := json.Marshal(map[string]interface{}{"appId": appID})
@@ -342,7 +359,6 @@ func TestHardeningHandler_ReadRoutesAllowAuditor(t *testing.T) {
 		{name: "list", path: "/api/v1/hardening-tasks"},
 		{name: "detail", path: fmt.Sprintf("/api/v1/hardening-tasks/%d", taskID)},
 		{name: "logs", path: fmt.Sprintf("/api/v1/hardening-tasks/%d/logs?stepKey=%s", taskID, model.HardeningStepPrepareInput)},
-		{name: "download", path: fmt.Sprintf("/api/v1/hardening-tasks/%d/download-url", taskID)},
 		{name: "history", path: fmt.Sprintf("/api/v1/apps/%d/hardening-history", appID)},
 	} {
 		getReq, _ := http.NewRequest(http.MethodGet, srv.URL+tc.path, nil)
@@ -356,5 +372,105 @@ func TestHardeningHandler_ReadRoutesAllowAuditor(t *testing.T) {
 			t.Fatalf("%s status = %d, want %d", tc.name, getResp.StatusCode, http.StatusOK)
 		}
 		getResp.Body.Close()
+	}
+}
+
+// TestHardeningHandler_DownloadURLRequiresAdminOrDeveloperRole guards against
+// a regression of the download-url route's RBAC: it must match the app
+// download-url route (admin/developer only, per the frontend's documented
+// permission matrix for "下载加固交付包") rather than being open to every
+// authenticated role like the other read-only hardening endpoints.
+func TestHardeningHandler_DownloadURLRequiresAdminOrDeveloperRole(t *testing.T) {
+	srv, adminToken, developerToken, auditorToken, appID, repo, auditRepo, cleanup := setupHardeningRouter(t)
+	defer cleanup()
+
+	body, err := json.Marshal(map[string]interface{}{"appId": appID})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/hardening-tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("create status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var created struct {
+		Data service.HardeningTaskDetail `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		resp.Body.Close()
+		t.Fatalf("decode create response: %v", err)
+	}
+	resp.Body.Close()
+
+	taskID := created.Data.Task.ID
+	now := time.Now()
+	if err := repo.MarkTaskRunning(taskID, now); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	if err := repo.CompleteTaskForApp(taskID, "handler/rbac-unsigned.apk", 10, "abc", "", 0, "", now); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
+	}
+
+	downloadPath := fmt.Sprintf("/api/v1/hardening-tasks/%d/download-url", taskID)
+
+	auditorReq, _ := http.NewRequest(http.MethodGet, srv.URL+downloadPath, nil)
+	auditorReq.Header.Set("Authorization", "Bearer "+auditorToken)
+	auditorResp, err := http.DefaultClient.Do(auditorReq)
+	if err != nil {
+		t.Fatalf("auditor download request: %v", err)
+	}
+	defer auditorResp.Body.Close()
+	if auditorResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("auditor download status = %d, want %d", auditorResp.StatusCode, http.StatusForbidden)
+	}
+
+	if logs, _, err := auditRepo.List(repository.AuditListFilter{Action: string(model.AuditActionHardeningDownload), TargetType: "hardening_task"}); err != nil {
+		t.Fatalf("List() audit error = %v", err)
+	} else {
+		for _, l := range logs {
+			if l.TargetID == taskID {
+				t.Fatalf("a rejected (403) download attempt must not produce an audit entry, found: %+v", l)
+			}
+		}
+	}
+
+	seenActors := map[uint]bool{}
+	for _, token := range []string{adminToken, developerToken} {
+		getReq, _ := http.NewRequest(http.MethodGet, srv.URL+downloadPath, nil)
+		getReq.Header.Set("Authorization", "Bearer "+token)
+		getResp, err := http.DefaultClient.Do(getReq)
+		if err != nil {
+			t.Fatalf("download request: %v", err)
+		}
+		if getResp.StatusCode != http.StatusOK {
+			getResp.Body.Close()
+			t.Fatalf("download status = %d, want %d", getResp.StatusCode, http.StatusOK)
+		}
+		getResp.Body.Close()
+	}
+
+	logs, _, err := auditRepo.List(repository.AuditListFilter{Action: string(model.AuditActionHardeningDownload), TargetType: "hardening_task"})
+	if err != nil {
+		t.Fatalf("List() audit error = %v", err)
+	}
+	for _, l := range logs {
+		if l.TargetID != taskID {
+			continue
+		}
+		if l.IP != "127.0.0.1" {
+			t.Fatalf("download audit entry IP = %q, want the real client IP as seen by the HTTP server", l.IP)
+		}
+		seenActors[l.ActorUserID] = true
+	}
+	if len(seenActors) != 2 {
+		t.Fatalf("distinct actors recorded for the two successful downloads = %d, want 2 (admin and developer must each land their own audit row)", len(seenActors))
 	}
 }

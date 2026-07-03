@@ -76,8 +76,21 @@ func TestStrategyService_SaveRecordsAuditAndValidationFailureDoesNot(t *testing.
 		t.Fatalf("Save() validation error = %v, want %v", err, service.ErrInvalidDexLevel)
 	}
 	logs = findAuditLogs(t, auditService, actorID, model.AuditActionStrategySave)
-	if len(logs) != 1 {
-		t.Fatalf("validation failure should not create audit row, got %+v", logs)
+	// Failure-audit retrofit (Task 4): a validation failure now also records
+	// an audit row (Success:false), in addition to the earlier successful
+	// Save() row above — so we expect 2 rows total, with the second being
+	// the failure entry with TargetID 0 (no strategy object was persisted).
+	if len(logs) != 2 {
+		t.Fatalf("expected success row + failure row after validation failure, got %+v", logs)
+	}
+	var failureRows []model.AuditLog
+	for _, row := range logs {
+		if !row.Success {
+			failureRows = append(failureRows, row)
+		}
+	}
+	if len(failureRows) != 1 || failureRows[0].TargetID != 0 || failureRows[0].TargetType != "strategy" {
+		t.Fatalf("unexpected failure audit row: %+v", failureRows)
 	}
 }
 
@@ -108,8 +121,20 @@ func TestUserService_CreateUpdateStatusRecordsAudit(t *testing.T) {
 		t.Fatalf("duplicate Create() error = %v, want %v", err, service.ErrEmailAlreadyExists)
 	}
 	createLogs = findAuditLogs(t, auditService, actorID, model.AuditActionUserCreate)
-	if len(createLogs) != 1 {
-		t.Fatalf("duplicate create should not create audit row, got %+v", createLogs)
+	// Failure-audit retrofit (Task 5): a duplicate-email failure now also
+	// records an audit row (Success:false), in addition to the earlier
+	// successful Create() row above — so we expect 2 rows total.
+	if len(createLogs) != 2 {
+		t.Fatalf("expected success row + failure row after duplicate create, got %+v", createLogs)
+	}
+	var createFailureRows []model.AuditLog
+	for _, row := range createLogs {
+		if !row.Success {
+			createFailureRows = append(createFailureRows, row)
+		}
+	}
+	if len(createFailureRows) != 1 || createFailureRows[0].TargetID != 0 || createFailureRows[0].TargetType != "user" {
+		t.Fatalf("unexpected user create failure audit row: %+v", createFailureRows)
 	}
 
 	newName := "审计用户已编辑"
@@ -161,5 +186,54 @@ func TestHardeningService_CreateRecordsAuditEntry(t *testing.T) {
 	logs := findAuditLogs(t, auditService, actorID, model.AuditActionHardeningCreate)
 	if len(logs) != 1 || logs[0].TargetType != "hardening_task" || logs[0].TargetID != detail.Task.ID || logs[0].Detail != app.Name+" / "+detail.Task.TaskNo {
 		t.Fatalf("unexpected hardening audit logs: %+v", logs)
+	}
+}
+
+func TestHardeningService_DownloadURLRecordsAuditEntry(t *testing.T) {
+	database, auditService, marker, actorID := setupAuditRetrofitDB(t, "hardening-download-audit")
+	scope := newHardeningServiceTestScope()
+	cleanupHardeningServiceTestData(t, database, scope)
+	t.Cleanup(func() { cleanupHardeningServiceTestData(t, database, scope) })
+
+	appRepo := repository.NewAppRepository(database)
+	hardeningRepo := repository.NewHardeningRepository(database)
+	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), nil)
+	svc := service.NewHardeningService(
+		hardeningRepo,
+		appRepo,
+		strategySvc,
+		fakeHardeningURLStorage{},
+		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		auditService,
+	)
+	app := createHardeningServiceApp(t, appRepo, scope, "download-audit")
+
+	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{
+		AppID:     app.ID,
+		CreatedBy: actorID,
+		IP:        marker,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	now := time.Now()
+	if err := hardeningRepo.MarkTaskRunning(detail.Task.ID, now); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	if err := hardeningRepo.CompleteTaskForApp(detail.Task.ID, "hardening/unsigned-download.apk", 10, "abc", "", 0, "", now); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
+	}
+
+	downloadURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "unsigned", actorID, marker)
+	if err != nil {
+		t.Fatalf("DownloadURL() error = %v", err)
+	}
+	if downloadURL == "" {
+		t.Fatal("expected non-empty download URL")
+	}
+
+	logs := findAuditLogs(t, auditService, actorID, model.AuditActionHardeningDownload)
+	if len(logs) != 1 || logs[0].TargetType != "hardening_task" || logs[0].TargetID != detail.Task.ID || logs[0].Detail != app.Name+" / "+detail.Task.TaskNo+" / unsigned" {
+		t.Fatalf("unexpected hardening download audit logs: %+v", logs)
 	}
 }

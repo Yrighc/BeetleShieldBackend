@@ -21,7 +21,7 @@ import (
 	"beetleshield-backend/internal/service"
 )
 
-func setupFullRouter(t *testing.T) (*httptest.Server, string, string, func()) {
+func setupFullRouter(t *testing.T) (*httptest.Server, string, string, *repository.AuditRepository, func()) {
 	t.Helper()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
@@ -58,7 +58,10 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, string, func()) {
 		t.Fatalf("create auditor user: %v", err)
 	}
 
-	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, nil)
+	auditRepo := repository.NewAuditRepository(database)
+	auditService := service.NewAuditService(auditRepo)
+
+	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, auditService)
 	token, _, err := authService.Login(testUser.Email, "Password123!", "")
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
@@ -78,7 +81,7 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, string, func()) {
 	}
 	appRepo := repository.NewAppRepository(database)
 	hardeningRepo := repository.NewHardeningRepository(database)
-	appService := service.NewAppService(appRepo, hardeningRepo, st, cfg.MaxUploadSizeMB, nil)
+	appService := service.NewAppService(appRepo, hardeningRepo, st, cfg.MaxUploadSizeMB, auditService)
 	appHandler := handler.NewAppHandler(appService)
 
 	r := router.New(router.Deps{
@@ -92,13 +95,14 @@ func setupFullRouter(t *testing.T) (*httptest.Server, string, string, func()) {
 		userRepo.DeleteByEmail(testUser.Email)
 		userRepo.DeleteByEmail(auditorUser.Email)
 		database.Unscoped().Where("package_name LIKE ?", "com.handlertest.%").Delete(&model.App{})
+		database.Unscoped().Where("actor_user_id IN ?", []uint{testUser.ID, auditorUser.ID}).Delete(&model.AuditLog{})
 		srv.Close()
 	}
-	return srv, token, auditorToken, cleanup
+	return srv, token, auditorToken, auditRepo, cleanup
 }
 
 func TestAppUploadListGetDownloadDelete(t *testing.T) {
-	srv, token, _, cleanup := setupFullRouter(t)
+	srv, token, _, auditRepo, cleanup := setupFullRouter(t)
 	defer cleanup()
 
 	var buf bytes.Buffer
@@ -146,6 +150,15 @@ func TestAppUploadListGetDownloadDelete(t *testing.T) {
 		t.Fatal("expected non-zero app ID")
 	}
 
+	uploadLog := findAuditLogForTarget(t, auditRepo, string(model.AuditActionAppUpload), "app", appID)
+	if uploadLog.ActorUserID == 0 {
+		t.Fatal("upload audit entry has zero ActorUserID: the authenticated caller's ID from the JWT never reached the audit row")
+	}
+	if uploadLog.IP != "127.0.0.1" {
+		t.Fatalf("upload audit entry IP = %q, want the real client IP as seen by the HTTP server", uploadLog.IP)
+	}
+	uploaderID := uploadLog.ActorUserID
+
 	listReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/apps?tag=tool", nil)
 	listReq.Header.Set("Authorization", "Bearer "+token)
 	listResp, err := http.DefaultClient.Do(listReq)
@@ -179,6 +192,11 @@ func TestAppUploadListGetDownloadDelete(t *testing.T) {
 		t.Fatalf("download-url status = %d, want %d", dlResp.StatusCode, http.StatusOK)
 	}
 
+	downloadLog := findAuditLogForTarget(t, auditRepo, string(model.AuditActionAppDownload), "app", appID)
+	if downloadLog.ActorUserID != uploaderID {
+		t.Fatalf("download audit entry ActorUserID = %d, want %d", downloadLog.ActorUserID, uploaderID)
+	}
+
 	delReq, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/v1/apps/%d", srv.URL, appID), nil)
 	delReq.Header.Set("Authorization", "Bearer "+token)
 	delResp, err := http.DefaultClient.Do(delReq)
@@ -188,6 +206,11 @@ func TestAppUploadListGetDownloadDelete(t *testing.T) {
 	defer delResp.Body.Close()
 	if delResp.StatusCode != http.StatusOK {
 		t.Fatalf("delete status = %d, want %d", delResp.StatusCode, http.StatusOK)
+	}
+
+	deleteLog := findAuditLogForTarget(t, auditRepo, string(model.AuditActionAppDelete), "app", appID)
+	if deleteLog.ActorUserID != uploaderID {
+		t.Fatalf("delete audit entry ActorUserID = %d, want %d", deleteLog.ActorUserID, uploaderID)
 	}
 
 	getReq2, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v1/apps/%d", srv.URL, appID), nil)
@@ -203,7 +226,7 @@ func TestAppUploadListGetDownloadDelete(t *testing.T) {
 }
 
 func TestAppList_RequiresAuth(t *testing.T) {
-	srv, _, _, cleanup := setupFullRouter(t)
+	srv, _, _, _, cleanup := setupFullRouter(t)
 	defer cleanup()
 
 	resp, err := http.Get(srv.URL + "/api/v1/apps")
@@ -217,7 +240,7 @@ func TestAppList_RequiresAuth(t *testing.T) {
 }
 
 func TestAppWriteRoutes_RequireAdminOrDeveloperRole(t *testing.T) {
-	srv, _, auditorToken, cleanup := setupFullRouter(t)
+	srv, _, auditorToken, _, cleanup := setupFullRouter(t)
 	defer cleanup()
 
 	var buf bytes.Buffer
@@ -264,4 +287,25 @@ func TestAppWriteRoutes_RequireAdminOrDeveloperRole(t *testing.T) {
 	if listResp.StatusCode != http.StatusOK {
 		t.Fatalf("list status = %d, want %d (read routes must stay open to auditor)", listResp.StatusCode, http.StatusOK)
 	}
+}
+
+// findAuditLogForTarget fetches audit entries matching action (AuditListFilter
+// has no TargetID field, so it filters by action/targetType server-side and
+// TargetID client-side) and requires exactly one match for targetID.
+func findAuditLogForTarget(t *testing.T, auditRepo *repository.AuditRepository, action, targetType string, targetID uint) model.AuditLog {
+	t.Helper()
+	logs, _, err := auditRepo.List(repository.AuditListFilter{Action: action, TargetType: targetType})
+	if err != nil {
+		t.Fatalf("List() audit error = %v", err)
+	}
+	var matches []model.AuditLog
+	for _, l := range logs {
+		if l.TargetID == targetID {
+			matches = append(matches, l)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("audit logs for action=%s targetType=%s targetID=%d = %+v, want exactly one", action, targetType, targetID, matches)
+	}
+	return matches[0]
 }

@@ -329,6 +329,18 @@ func TestHardeningRepository_QueueStepLogAndCompletion(t *testing.T) {
 	}
 }
 
+func TestHardeningRepository_NextQueuedTaskReturnsNilWhenQueueEmpty(t *testing.T) {
+	repo, _, _, _ := setupHardeningRepo(t)
+
+	next, err := repo.NextQueuedTask()
+	if err != nil {
+		t.Fatalf("NextQueuedTask() error = %v, want nil for empty queue", err)
+	}
+	if next != nil {
+		t.Fatalf("NextQueuedTask() = %+v, want nil for empty queue", next)
+	}
+}
+
 func TestHardeningRepository_FailedTaskAndStepTransitions(t *testing.T) {
 	repo, appRepo, _, scope := setupHardeningRepo(t)
 	app := createRepoApp(t, appRepo, scope, "failed")

@@ -111,11 +111,16 @@ func (r *HardeningRepository) HasActiveTaskForApp(appID uint) (bool, error) {
 
 func (r *HardeningRepository) NextQueuedTask() (*model.HardeningTask, error) {
 	var task model.HardeningTask
-	if err := r.db.Preload("App").
+	result := r.db.Preload("App").
 		Where("status = ?", model.HardeningTaskStatusQueued).
 		Order("created_at ASC, id ASC").
-		First(&task).Error; err != nil {
-		return nil, err
+		Limit(1).
+		Find(&task)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
 	}
 	return &task, nil
 }

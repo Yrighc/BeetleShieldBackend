@@ -68,7 +68,20 @@ func NewHardeningService(
 	}
 }
 
-func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTaskInput) (*HardeningTaskDetail, error) {
+func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTaskInput) (detail *HardeningTaskDetail, err error) {
+	defer func() {
+		if err != nil {
+			s.auditService.Record(RecordAuditInput{
+				ActorUserID: input.CreatedBy,
+				Action:      model.AuditActionHardeningCreate,
+				TargetType:  "app",
+				TargetID:    input.AppID,
+				Detail:      "创建加固任务失败 - " + err.Error(),
+				IP:          input.IP,
+				Success:     false,
+			})
+		}
+	}()
 	_ = ctx
 
 	app, err := s.appRepo.FindByID(input.AppID)
@@ -117,7 +130,7 @@ func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTask
 		return nil, err
 	}
 
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: input.CreatedBy,
 		Action:      model.AuditActionHardeningCreate,
 		TargetType:  "hardening_task",
@@ -178,7 +191,7 @@ func (s *HardeningService) History(appID uint) ([]model.HardeningTask, error) {
 	return s.hardeningRepo.RecentByApp(appID, 5)
 }
 
-func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifact string) (string, error) {
+func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifact string, actorUserID uint, ip string) (string, error) {
 	task, err := s.hardeningRepo.FindByID(taskID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -200,15 +213,27 @@ func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifac
 		return "", ErrHardeningArtifactNotFound
 	}
 
-	return s.storage.PresignedDownloadURL(ctx, objectKey, 15*time.Minute)
+	downloadURL, err := s.storage.PresignedDownloadURL(ctx, objectKey, 15*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	artifactLabel := artifact
+	if artifactLabel == "" {
+		artifactLabel = "unsigned"
+	}
+	s.auditService.Record(RecordAuditInput{
+		ActorUserID: actorUserID,
+		Action:      model.AuditActionHardeningDownload,
+		TargetType:  "hardening_task",
+		TargetID:    task.ID,
+		Detail:      task.App.Name + " / " + task.TaskNo + " / " + artifactLabel,
+		IP:          ip,
+		Success:     true,
+	})
+	return downloadURL, nil
 }
 
 func generateHardeningTaskNo(now time.Time) string {
 	return fmt.Sprintf("TASK-%s-%d", now.Format("20060102"), now.UnixNano())
 }
 
-func (s *HardeningService) recordAudit(input RecordAuditInput) {
-	if s.auditService != nil {
-		s.auditService.Record(input)
-	}
-}

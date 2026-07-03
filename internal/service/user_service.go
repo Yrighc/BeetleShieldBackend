@@ -43,17 +43,38 @@ func (s *UserService) List(filter repository.UserListFilter) ([]model.User, int6
 	return s.userRepo.List(filter)
 }
 
-func (s *UserService) Create(input CreateUserInput) (*model.User, error) {
-	if _, err := s.userRepo.FindByEmail(input.Email); err == nil {
+func (s *UserService) Create(input CreateUserInput) (user *model.User, err error) {
+	defer func() {
+		targetID := uint(0)
+		detail := input.Email
+		if user != nil {
+			targetID = user.ID
+			detail = user.Email + " (" + string(user.Role) + ")"
+		}
+		if err != nil {
+			detail = input.Email + " - " + err.Error()
+		}
+		s.auditService.Record(RecordAuditInput{
+			ActorUserID: input.ActorUserID,
+			Action:      model.AuditActionUserCreate,
+			TargetType:  "user",
+			TargetID:    targetID,
+			Detail:      detail,
+			IP:          input.IP,
+			Success:     err == nil,
+		})
+	}()
+
+	if _, findErr := s.userRepo.FindByEmail(input.Email); findErr == nil {
 		return nil, ErrEmailAlreadyExists
 	}
 
-	hashed, err := hash.HashPassword(input.Password)
-	if err != nil {
-		return nil, err
+	hashed, hashErr := hash.HashPassword(input.Password)
+	if hashErr != nil {
+		return nil, hashErr
 	}
 
-	user := &model.User{
+	user = &model.User{
 		Name:         input.Name,
 		Email:        input.Email,
 		PasswordHash: hashed,
@@ -61,23 +82,30 @@ func (s *UserService) Create(input CreateUserInput) (*model.User, error) {
 		Department:   input.Department,
 		Status:       model.UserStatusActive,
 	}
-	if err := s.userRepo.Create(user); err != nil {
+	if err = s.userRepo.Create(user); err != nil {
 		return nil, err
 	}
-	s.recordAudit(RecordAuditInput{
-		ActorUserID: input.ActorUserID,
-		Action:      model.AuditActionUserCreate,
-		TargetType:  "user",
-		TargetID:    user.ID,
-		Detail:      user.Email + " (" + string(user.Role) + ")",
-		IP:          input.IP,
-		Success:     true,
-	})
 	return user, nil
 }
 
-func (s *UserService) Update(id uint, input UpdateUserInput, actorUserID uint, ip string) (*model.User, error) {
-	if _, err := s.userRepo.FindByID(id); err != nil {
+func (s *UserService) Update(id uint, input UpdateUserInput, actorUserID uint, ip string) (user *model.User, err error) {
+	defer func() {
+		detail := "用户资料已更新"
+		if err != nil {
+			detail = "更新用户失败 - " + err.Error()
+		}
+		s.auditService.Record(RecordAuditInput{
+			ActorUserID: actorUserID,
+			Action:      model.AuditActionUserUpdate,
+			TargetType:  "user",
+			TargetID:    id,
+			Detail:      detail,
+			IP:          ip,
+			Success:     err == nil,
+		})
+	}()
+
+	if _, err = s.userRepo.FindByID(id); err != nil {
 		return nil, ErrUserNotFound
 	}
 
@@ -93,25 +121,39 @@ func (s *UserService) Update(id uint, input UpdateUserInput, actorUserID uint, i
 	}
 
 	if len(updates) > 0 {
-		if err := s.userRepo.Update(id, updates); err != nil {
+		if err = s.userRepo.Update(id, updates); err != nil {
 			return nil, err
 		}
 	}
 
-	s.recordAudit(RecordAuditInput{
-		ActorUserID: actorUserID,
-		Action:      model.AuditActionUserUpdate,
-		TargetType:  "user",
-		TargetID:    id,
-		Detail:      "用户资料已更新",
-		IP:          ip,
-		Success:     true,
-	})
-	return s.userRepo.FindByID(id)
+	user, err = s.userRepo.FindByID(id)
+	return user, err
 }
 
-func (s *UserService) UpdateStatus(id uint, status model.UserStatus, currentUserID uint, ip string) error {
-	if _, err := s.userRepo.FindByID(id); err != nil {
+func (s *UserService) UpdateStatus(id uint, status model.UserStatus, currentUserID uint, ip string) (err error) {
+	defer func() {
+		detail := "状态变更失败 - "
+		if err == nil {
+			statusLabel := "启用"
+			if status == model.UserStatusDisabled {
+				statusLabel = "禁用"
+			}
+			detail = "状态变更为 " + statusLabel
+		} else {
+			detail += err.Error()
+		}
+		s.auditService.Record(RecordAuditInput{
+			ActorUserID: currentUserID,
+			Action:      model.AuditActionUserStatusChange,
+			TargetType:  "user",
+			TargetID:    id,
+			Detail:      detail,
+			IP:          ip,
+			Success:     err == nil,
+		})
+	}()
+
+	if _, err = s.userRepo.FindByID(id); err != nil {
 		return ErrUserNotFound
 	}
 
@@ -119,27 +161,9 @@ func (s *UserService) UpdateStatus(id uint, status model.UserStatus, currentUser
 		return ErrCannotDisableSelf
 	}
 
-	if err := s.userRepo.UpdateStatus(id, status); err != nil {
+	if err = s.userRepo.UpdateStatus(id, status); err != nil {
 		return err
 	}
-	statusLabel := "启用"
-	if status == model.UserStatusDisabled {
-		statusLabel = "禁用"
-	}
-	s.recordAudit(RecordAuditInput{
-		ActorUserID: currentUserID,
-		Action:      model.AuditActionUserStatusChange,
-		TargetType:  "user",
-		TargetID:    id,
-		Detail:      "状态变更为 " + statusLabel,
-		IP:          ip,
-		Success:     true,
-	})
 	return nil
 }
 
-func (s *UserService) recordAudit(input RecordAuditInput) {
-	if s.auditService != nil {
-		s.auditService.Record(input)
-	}
-}

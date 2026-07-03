@@ -48,6 +48,7 @@ func Migrate(database *gorm.DB) error {
 		&model.HardeningStep{},
 		&model.HardeningLog{},
 		&model.AuditLog{},
+		&model.APIRequestLog{},
 	)
 }
 

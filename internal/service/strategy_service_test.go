@@ -2,15 +2,23 @@ package service_test
 
 import (
 	"testing"
+	"time"
 
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/db"
 	"beetleshield-backend/internal/model"
 	"beetleshield-backend/internal/repository"
 	"beetleshield-backend/internal/service"
+	"gorm.io/gorm"
 )
 
 func setupTestStrategyRepo(t *testing.T) *repository.StrategyRepository {
+	t.Helper()
+	repo, _ := setupTestStrategyRepoWithDB(t)
+	return repo
+}
+
+func setupTestStrategyRepoWithDB(t *testing.T) (*repository.StrategyRepository, *gorm.DB) {
 	t.Helper()
 	cfg := &config.Config{
 		DBHost: "localhost", DBPort: "5432",
@@ -28,7 +36,7 @@ func setupTestStrategyRepo(t *testing.T) *repository.StrategyRepository {
 	t.Cleanup(func() {
 		database.Unscoped().Where("1 = 1").Delete(&model.Strategy{})
 	})
-	return repository.NewStrategyRepository(database)
+	return repository.NewStrategyRepository(database), database
 }
 
 func TestStrategyService_Templates(t *testing.T) {
@@ -113,5 +121,44 @@ func TestStrategyService_SaveThenGetCurrent(t *testing.T) {
 	}
 	if current.DexLevel != model.DexLevelMedium || current.SoStrength != 70 {
 		t.Errorf("GetCurrent() after Save() returned unexpected values: %+v", current)
+	}
+}
+
+func TestStrategyService_SaveInvalidDexLevelRecordsFailureAudit(t *testing.T) {
+	repo, database := setupTestStrategyRepoWithDB(t)
+	auditService := service.NewAuditService(repository.NewAuditRepository(database))
+	svc := service.NewStrategyService(repo, auditService)
+
+	actorID := uint(time.Now().UnixNano()%1_000_000_000 + 800_000)
+	t.Cleanup(func() {
+		database.Unscoped().Where("actor_user_id = ?", actorID).Delete(&model.AuditLog{})
+	})
+
+	_, err := svc.Save(service.SaveStrategyInput{
+		DexLevel: "not-a-real-level", SoShell: model.SoShellNone, SoStrength: 50,
+	}, actorID, "")
+	if err != service.ErrInvalidDexLevel {
+		t.Fatalf("err = %v, want %v", err, service.ErrInvalidDexLevel)
+	}
+
+	logs, total, err := auditService.List(repository.AuditListFilter{
+		ActorUserID: actorID,
+		Action:      string(model.AuditActionStrategySave),
+		TargetType:  "strategy",
+		Page:        1,
+		PageSize:    10,
+	})
+	if err != nil {
+		t.Fatalf("audit List() error = %v", err)
+	}
+
+	var failureRows []model.AuditLog
+	for _, row := range logs {
+		if !row.Success {
+			failureRows = append(failureRows, row)
+		}
+	}
+	if total != 1 || len(failureRows) != 1 {
+		t.Fatalf("failure audit rows = %+v (total=%d), want exactly 1", failureRows, total)
 	}
 }

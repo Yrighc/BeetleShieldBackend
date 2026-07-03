@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
-
 	"beetleshield-backend/internal/model"
 	"beetleshield-backend/internal/repository"
 	"beetleshield-backend/internal/service"
@@ -90,10 +88,10 @@ func (w *HardeningWorker) cleanupRecoveredArtifacts(tasks []model.HardeningTask)
 func (w *HardeningWorker) ProcessNext(ctx context.Context) (bool, error) {
 	task, err := w.repo.NextQueuedTask()
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return false, nil
-		}
 		return false, err
+	}
+	if task == nil {
+		return false, nil
 	}
 
 	if err := w.repo.MarkTaskRunning(task.ID, time.Now()); err != nil {

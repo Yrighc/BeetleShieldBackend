@@ -94,7 +94,27 @@ func (s *StrategyService) GetCurrent() (*model.Strategy, error) {
 	return current, nil
 }
 
-func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint, ip string) (*model.Strategy, error) {
+func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint, ip string) (strategy *model.Strategy, err error) {
+	defer func() {
+		targetID := uint(0)
+		if strategy != nil {
+			targetID = strategy.ID
+		}
+		detail := "全局加固策略已更新"
+		if err != nil {
+			detail = "策略保存失败 - " + err.Error()
+		}
+		s.auditService.Record(RecordAuditInput{
+			ActorUserID: updatedBy,
+			Action:      model.AuditActionStrategySave,
+			TargetType:  "strategy",
+			TargetID:    targetID,
+			Detail:      detail,
+			IP:          ip,
+			Success:     err == nil,
+		})
+	}()
+
 	if !validDexLevels[input.DexLevel] {
 		return nil, ErrInvalidDexLevel
 	}
@@ -105,7 +125,7 @@ func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint, ip strin
 		return nil, ErrInvalidSoStrength
 	}
 
-	strategy := &model.Strategy{
+	strategy = &model.Strategy{
 		Frida: input.Frida, Xposed: input.Xposed, Debugger: input.Debugger, Emulator: input.Emulator,
 		DexLevel: input.DexLevel, StringEncrypt: input.StringEncrypt, ResMix: input.ResMix,
 		SoShell: input.SoShell, SoStrength: input.SoStrength, TargetSos: input.TargetSos,
@@ -115,20 +135,6 @@ func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint, ip strin
 	if err := s.strategyRepo.Save(strategy); err != nil {
 		return nil, err
 	}
-	s.recordAudit(RecordAuditInput{
-		ActorUserID: updatedBy,
-		Action:      model.AuditActionStrategySave,
-		TargetType:  "strategy",
-		TargetID:    strategy.ID,
-		Detail:      "全局加固策略已更新",
-		IP:          ip,
-		Success:     true,
-	})
 	return strategy, nil
 }
 
-func (s *StrategyService) recordAudit(input RecordAuditInput) {
-	if s.auditService != nil {
-		s.auditService.Record(input)
-	}
-}

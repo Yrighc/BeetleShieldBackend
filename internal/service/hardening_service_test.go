@@ -82,6 +82,12 @@ func cleanupHardeningServiceTestData(t *testing.T, database *gorm.DB, scope hard
 
 func setupHardeningServiceTest(t *testing.T) (*service.HardeningService, *repository.AppRepository, *repository.HardeningRepository, hardeningServiceTestScope) {
 	t.Helper()
+	svc, appRepo, hardeningRepo, _, scope, _ := setupHardeningServiceTestWithAuditAndDB(t)
+	return svc, appRepo, hardeningRepo, scope
+}
+
+func setupHardeningServiceTestWithAuditAndDB(t *testing.T) (*service.HardeningService, *repository.AppRepository, *repository.HardeningRepository, *service.AuditService, hardeningServiceTestScope, *gorm.DB) {
+	t.Helper()
 	scope := newHardeningServiceTestScope()
 
 	cfg := &config.Config{
@@ -107,15 +113,16 @@ func setupHardeningServiceTest(t *testing.T) (*service.HardeningService, *reposi
 	hardeningRepo := repository.NewHardeningRepository(database)
 	strategyRepo := repository.NewStrategyRepository(database)
 	strategySvc := service.NewStrategyService(strategyRepo, nil)
+	auditService := service.NewAuditService(repository.NewAuditRepository(database))
 	svc := service.NewHardeningService(
 		hardeningRepo,
 		appRepo,
 		strategySvc,
 		fakeHardeningURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
-		nil,
+		auditService,
 	)
-	return svc, appRepo, hardeningRepo, scope
+	return svc, appRepo, hardeningRepo, auditService, scope, database
 }
 
 func createHardeningServiceApp(t *testing.T, appRepo *repository.AppRepository, scope hardeningServiceTestScope, suffix string) model.App {
@@ -183,6 +190,46 @@ func TestHardeningService_CreateRejectsActiveTask(t *testing.T) {
 	_, err = svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: 42})
 	if err != service.ErrHardeningActiveTaskExists {
 		t.Fatalf("second err = %v, want ErrHardeningActiveTaskExists", err)
+	}
+}
+
+func TestHardeningService_CreateRejectsActiveTaskRecordsFailureAudit(t *testing.T) {
+	svc, appRepo, _, auditService, scope, database := setupHardeningServiceTestWithAuditAndDB(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "active-audit")
+	actorID := uint(time.Now().UnixNano()%1_000_000_000 + 700_000)
+	t.Cleanup(func() {
+		database.Unscoped().Where("actor_user_id = ?", actorID).Delete(&model.AuditLog{})
+	})
+
+	_, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: actorID})
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+
+	_, err = svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: actorID})
+	if err != service.ErrHardeningActiveTaskExists {
+		t.Fatalf("second err = %v, want ErrHardeningActiveTaskExists", err)
+	}
+
+	logs, _, err := auditService.List(repository.AuditListFilter{
+		ActorUserID: actorID,
+		Action:      string(model.AuditActionHardeningCreate),
+		TargetType:  "app",
+		Page:        1,
+		PageSize:    10,
+	})
+	if err != nil {
+		t.Fatalf("audit List() error = %v", err)
+	}
+
+	var failureRows []model.AuditLog
+	for _, row := range logs {
+		if !row.Success && row.TargetID == app.ID {
+			failureRows = append(failureRows, row)
+		}
+	}
+	if len(failureRows) != 1 {
+		t.Fatalf("failure audit rows = %+v, want exactly 1", failureRows)
 	}
 }
 
@@ -290,7 +337,7 @@ func TestHardeningService_DownloadURLArtifacts(t *testing.T) {
 		t.Fatalf("CompleteTaskForApp() error = %v", err)
 	}
 
-	unsignedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "")
+	unsignedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "", 0, "")
 	if err != nil {
 		t.Fatalf("DownloadURL(unsigned) error = %v", err)
 	}
@@ -298,7 +345,7 @@ func TestHardeningService_DownloadURLArtifacts(t *testing.T) {
 		t.Fatalf("unsigned URL = %q", unsignedURL)
 	}
 
-	signedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "signed_test")
+	signedURL, err := svc.DownloadURL(context.Background(), detail.Task.ID, "signed_test", 0, "")
 	if err != nil {
 		t.Fatalf("DownloadURL(signed_test) error = %v", err)
 	}
@@ -316,13 +363,13 @@ func TestHardeningService_DownloadURLErrors(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "bad"); err != service.ErrInvalidHardeningArtifact {
+	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "bad", 0, ""); err != service.ErrInvalidHardeningArtifact {
 		t.Fatalf("DownloadURL() invalid artifact err = %v, want ErrInvalidHardeningArtifact", err)
 	}
-	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, ""); err != service.ErrHardeningArtifactNotFound {
+	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "", 0, ""); err != service.ErrHardeningArtifactNotFound {
 		t.Fatalf("DownloadURL() missing unsigned artifact err = %v, want ErrHardeningArtifactNotFound", err)
 	}
-	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "signed_test"); err != service.ErrHardeningArtifactNotFound {
+	if _, err := svc.DownloadURL(context.Background(), detail.Task.ID, "signed_test", 0, ""); err != service.ErrHardeningArtifactNotFound {
 		t.Fatalf("DownloadURL() missing signed artifact err = %v, want ErrHardeningArtifactNotFound", err)
 	}
 }
@@ -339,10 +386,10 @@ func TestHardeningService_ErrorMappings(t *testing.T) {
 	if _, err := svc.History(999999); err != service.ErrHardeningAppNotFound {
 		t.Fatalf("History() err = %v, want ErrHardeningAppNotFound", err)
 	}
-	if _, err := svc.DownloadURL(context.Background(), 999999, ""); err != service.ErrHardeningTaskNotFound {
+	if _, err := svc.DownloadURL(context.Background(), 999999, "", 0, ""); err != service.ErrHardeningTaskNotFound {
 		t.Fatalf("DownloadURL() missing task err = %v, want ErrHardeningTaskNotFound", err)
 	}
-	if _, err := svc.DownloadURL(context.Background(), 999999, "bad"); err != service.ErrHardeningTaskNotFound {
+	if _, err := svc.DownloadURL(context.Background(), 999999, "bad", 0, ""); err != service.ErrHardeningTaskNotFound {
 		t.Fatalf("DownloadURL() missing task with bad artifact err = %v, want ErrHardeningTaskNotFound", err)
 	}
 }

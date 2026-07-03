@@ -12,6 +12,7 @@ import (
 	"beetleshield-backend/internal/config"
 	"beetleshield-backend/internal/db"
 	"beetleshield-backend/internal/handler"
+	"beetleshield-backend/internal/middleware"
 	"beetleshield-backend/internal/pkg/storage"
 	"beetleshield-backend/internal/repository"
 	"beetleshield-backend/internal/router"
@@ -56,6 +57,16 @@ func main() {
 	auditService := service.NewAuditService(auditRepo)
 	auditHandler := handler.NewAuditHandler(auditService)
 
+	apiRequestLogRepo := repository.NewAPIRequestLogRepository(database)
+	apiRequestLogService := service.NewAPIRequestLogService(apiRequestLogRepo)
+	apiRequestLogHandler := handler.NewAPIRequestLogHandler(apiRequestLogService)
+	requestLogRecorder := middleware.RequestLogRecorderFunc(func(entry middleware.RequestLogEntry) {
+		apiRequestLogService.Record(service.RecordAPIRequestInput{
+			Method: entry.Method, Path: entry.Path, Status: entry.Status,
+			LatencyMS: entry.LatencyMS, ClientIP: entry.ClientIP, ActorUserID: entry.ActorUserID,
+		})
+	})
+
 	authService := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpireHours, auditService)
 	authHandler := handler.NewAuthHandler(authService)
 
@@ -98,13 +109,15 @@ func main() {
 	workerDone := hardeningWorker.Start(ctx, 3*time.Second)
 
 	r := router.New(router.Deps{
-		JWTSecret:        cfg.JWTSecret,
-		AuthHandler:      authHandler,
-		AppHandler:       appHandler,
-		UserHandler:      userHandler,
-		StrategyHandler:  strategyHandler,
-		HardeningHandler: hardeningHandler,
-		AuditHandler:     auditHandler,
+		JWTSecret:            cfg.JWTSecret,
+		AuthHandler:          authHandler,
+		AppHandler:           appHandler,
+		UserHandler:          userHandler,
+		StrategyHandler:      strategyHandler,
+		HardeningHandler:     hardeningHandler,
+		AuditHandler:         auditHandler,
+		APIRequestLogHandler: apiRequestLogHandler,
+		RequestLogRecorder:   requestLogRecorder,
 	})
 
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}
