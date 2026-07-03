@@ -3,6 +3,10 @@
 tmp/
 dist/
 
+# dpt.jar is a proprietary external artifact, not part of this repo. Place
+# a real one here before `docker build` (see README "Docker 化部署").
+/dpt/
+
 .DS_Store
 
 .claude

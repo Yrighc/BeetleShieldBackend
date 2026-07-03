@@ -11,6 +11,11 @@ services:
       - "5432:5432"
     volumes:
       - beetleshield_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beetleshield -d beetleshield"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   minio:
     image: minio/minio:latest
@@ -25,7 +30,43 @@ services:
       - "9001:9001"
     volumes:
       - beetleshield_minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Packaged app (server + hardening worker + dpt.jar), opt-in via the
+  # "full" profile so `make dev-up` (bare `docker compose up`) keeps only
+  # starting the postgres/minio dependencies, unchanged from before — this
+  # service is for full-stack deployment (`make docker-up`), not local Go
+  # development where `make run` is faster to iterate on.
+  app:
+    build: .
+    container_name: beetleshield-app
+    restart: unless-stopped
+    profiles: ["full"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      MINIO_ENDPOINT: minio:9000
+      DPT_JAR_PATH: /opt/dpt/dpt.jar
+    volumes:
+      # cmd/server/main.go loads config from a literal ./.env file (not just
+      # process env vars), so it must exist inside the container too — the
+      # environment: overrides above still win over whatever this file says
+      # for DB_HOST/MINIO_ENDPOINT/DPT_JAR_PATH (viper's AutomaticEnv takes
+      # precedence over the config file).
+      - ./.env:/app/.env:ro
+      - beetleshield_dpt_work_data:/tmp/beetleshield-hardening
+    ports:
+      - "8080:8080"
 
 volumes:
   beetleshield_postgres_data:
   beetleshield_minio_data:
+  beetleshield_dpt_work_data:

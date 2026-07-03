@@ -1,0 +1,10 @@
+.git
+.env
+*.log
+tmp/
+dist/
+.DS_Store
+.claude
+CLAUDE.md
+docs/
+.superpowers/
