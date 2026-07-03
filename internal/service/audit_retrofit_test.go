@@ -171,6 +171,7 @@ func TestHardeningService_CreateRecordsAuditEntry(t *testing.T) {
 		fakeHardeningURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
 		auditService,
+		"BeetleShield Engine v2.4.1",
 	)
 	app := createHardeningServiceApp(t, appRepo, scope, "audit")
 
@@ -205,6 +206,7 @@ func TestHardeningService_DownloadURLRecordsAuditEntry(t *testing.T) {
 		fakeHardeningURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
 		auditService,
+		"BeetleShield Engine v2.4.1",
 	)
 	app := createHardeningServiceApp(t, appRepo, scope, "download-audit")
 

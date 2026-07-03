@@ -121,6 +121,7 @@ func setupHardeningServiceTestWithAuditAndDB(t *testing.T) (*service.HardeningSe
 		fakeHardeningURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
 		auditService,
+		"BeetleShield Engine v2.4.1",
 	)
 	return svc, appRepo, hardeningRepo, auditService, scope, database
 }
@@ -453,5 +454,64 @@ func TestHardeningService_CreateRejectsConcurrentActiveTask(t *testing.T) {
 	}
 	if found.Status != model.AppStatusProcessing {
 		t.Fatalf("app status = %s, want processing", found.Status)
+	}
+}
+
+func TestHardeningService_GetReportRequiresCompletedTask(t *testing.T) {
+	svc, appRepo, _, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "report-queued")
+
+	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: 1})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	_, err = svc.GetReport(detail.Task.ID)
+	if err != service.ErrHardeningReportNotReady {
+		t.Fatalf("GetReport() on queued task err = %v, want ErrHardeningReportNotReady", err)
+	}
+}
+
+func TestHardeningService_GetReportUnknownTask(t *testing.T) {
+	svc, _, _, _ := setupHardeningServiceTest(t)
+
+	_, err := svc.GetReport(999999999)
+	if err != service.ErrHardeningTaskNotFound {
+		t.Fatalf("GetReport() on unknown task err = %v, want ErrHardeningTaskNotFound", err)
+	}
+}
+
+func TestHardeningService_GetReportOnCompletedTask(t *testing.T) {
+	svc, appRepo, repo, scope := setupHardeningServiceTest(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "report-completed")
+
+	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{AppID: app.ID, CreatedBy: 1})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	now := time.Now()
+	if err := repo.MarkTaskRunning(detail.Task.ID, now); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	if err := repo.CompleteTaskForApp(detail.Task.ID, "unsigned.apk", 10, "abc", "signed.apk", 11, "def", now); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
+	}
+
+	report, err := svc.GetReport(detail.Task.ID)
+	if err != nil {
+		t.Fatalf("GetReport() error = %v", err)
+	}
+	if report.TaskID != detail.Task.ID {
+		t.Fatalf("report.TaskID = %d, want %d", report.TaskID, detail.Task.ID)
+	}
+	if report.AppName != app.Name || report.PackageName != app.PackageName {
+		t.Fatalf("report app identity = %+v, want name=%q pkg=%q", report, app.Name, app.PackageName)
+	}
+	if report.Artifact.EngineVersion != "BeetleShield Engine v2.4.1" {
+		t.Fatalf("report.Artifact.EngineVersion = %q", report.Artifact.EngineVersion)
+	}
+	if report.Artifact.FileName != "signed.apk" {
+		t.Fatalf("report.Artifact.FileName = %q, want signed.apk", report.Artifact.FileName)
 	}
 }

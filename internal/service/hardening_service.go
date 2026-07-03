@@ -18,6 +18,7 @@ var (
 	ErrHardeningActiveTaskExists = errors.New("app already has an active hardening task")
 	ErrHardeningArtifactNotFound = errors.New("hardening artifact not found")
 	ErrInvalidHardeningArtifact  = errors.New("invalid hardening artifact")
+	ErrHardeningReportNotReady   = errors.New("hardening task not completed, report not available")
 )
 
 type DownloadURLProvider interface {
@@ -48,6 +49,7 @@ type HardeningService struct {
 	storage         DownloadURLProvider
 	defaultVMPRules string
 	auditService    *AuditService
+	engineVersion   string
 }
 
 func NewHardeningService(
@@ -57,6 +59,7 @@ func NewHardeningService(
 	storage DownloadURLProvider,
 	defaultVMPRules string,
 	auditService *AuditService,
+	engineVersion string,
 ) *HardeningService {
 	return &HardeningService{
 		hardeningRepo:   hardeningRepo,
@@ -65,6 +68,7 @@ func NewHardeningService(
 		storage:         storage,
 		defaultVMPRules: defaultVMPRules,
 		auditService:    auditService,
+		engineVersion:   engineVersion,
 	}
 }
 
@@ -233,7 +237,22 @@ func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifac
 	return downloadURL, nil
 }
 
+func (s *HardeningService) GetReport(taskID uint) (*HardeningReport, error) {
+	task, err := s.hardeningRepo.FindByID(taskID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrHardeningTaskNotFound
+		}
+		return nil, err
+	}
+	if task.Status != model.HardeningTaskStatusCompleted {
+		return nil, ErrHardeningReportNotReady
+	}
+
+	report := BuildHardeningReport(*task, s.engineVersion)
+	return &report, nil
+}
+
 func generateHardeningTaskNo(now time.Time) string {
 	return fmt.Sprintf("TASK-%s-%d", now.Format("20060102"), now.UnixNano())
 }
-
