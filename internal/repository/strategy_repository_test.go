@@ -100,7 +100,7 @@ func TestStrategyRepository_ListOnlyRegularStrategies(t *testing.T) {
 	}
 	regular := &model.Strategy{
 		Name: "数信学院加固策略", Description: "高强度配置",
-		DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70,
+		DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP, SoStrength: 70,
 	}
 	if err := repo.Create(regular); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -129,7 +129,7 @@ func TestStrategyRepository_ListOnlyRegularStrategies(t *testing.T) {
 func TestStrategyRepository_NameExistsExcludesCurrentID(t *testing.T) {
 	repo := setupStrategyRepo(t)
 
-	first := &model.Strategy{Name: "数信学院加固策略", DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70}
+	first := &model.Strategy{Name: "数信学院加固策略", DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP, SoStrength: 70}
 	if err := repo.Create(first); err != nil {
 		t.Fatalf("Create(first) error = %v", err)
 	}
@@ -204,7 +204,7 @@ func TestStrategyRepository_PromoteLegacyCurrent(t *testing.T) {
 	repo := setupStrategyRepo(t)
 
 	legacy := &model.Strategy{
-		DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES,
+		DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP,
 		SoStrength: 70, UpdatedBy: 9,
 	}
 	if err := repo.db.Create(legacy).Error; err != nil {

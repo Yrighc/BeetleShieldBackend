@@ -28,19 +28,20 @@ func TestBuildDPTCommand_HighStrengthMapping(t *testing.T) {
 		OutputPath: "/work/output.apk",
 		RulesPath:  "/work/vmp-rules.txt",
 		Strategy: model.Strategy{
-			Frida:         true,
-			Xposed:        true,
-			Emulator:      true,
-			DexLevel:      model.DexLevelHigh,
-			StringEncrypt: true,
-			SoShell:       model.SoShellVMP,
-			RootDetect:    true,
-			Signature:     true,
-			AntiHook:      true,
-			ResEncrypt:    true,
+			Frida:              true,
+			Xposed:             true,
+			Emulator:           true,
+			DexLevel:           model.DexLevelHigh,
+			StringEncrypt:      true,
+			SoShell:            model.SoShellVMP,
+			RootDetect:         true,
+			Signature:          true,
+			AntiHook:           true,
+			ResEncrypt:         true,
+			ScreenshotProtect:  true,
+			FileIntegrityCheck: true,
+			ProxyDetect:        true,
 		},
-		EnableFileIntegrityCheck: true,
-		EnableProxyDetect:        true,
 	})
 	want := []string{
 		"java", "-jar", "/opt/dpt.jar",
@@ -50,12 +51,13 @@ func TestBuildDPTCommand_HighStrengthMapping(t *testing.T) {
 		"--enable-emulator-detect",
 		"--enable-root-detect",
 		"--enable-apk-sig-verify", "--apk-sig-policy", "block",
+		"--enable-screenshot-protect",
+		"--enable-file-integrity-check",
 		"--enable-hook-detect",
+		"--enable-proxy-detect",
 		"--enable-string-encrypt",
 		"--enable-assets-encrypt",
 		"--enable-vmp", "--vmp-rules", "/work/vmp-rules.txt",
-		"--enable-file-integrity-check",
-		"--enable-proxy-detect",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %#v\nwant %#v", args, want)
@@ -82,6 +84,53 @@ func TestBuildDPTCommand_DeduplicatesHookAndVMP(t *testing.T) {
 	}
 	if countArg(args, "--enable-vmp") != 1 {
 		t.Fatalf("vmp flag count = %d, want 1 in %#v", countArg(args, "--enable-vmp"), args)
+	}
+}
+
+func TestBuildDPTCommand_SigPolicyWarnAvoidsBlockingTestInstalls(t *testing.T) {
+	args := BuildDPTCommand(EngineCommandInput{
+		JavaBin:    "java",
+		JarPath:    "/opt/dpt.jar",
+		InputPath:  "/work/input.apk",
+		OutputPath: "/work/output.apk",
+		RulesPath:  "/work/vmp-rules.txt",
+		Strategy: model.Strategy{
+			Signature: true,
+			SigPolicy: model.SigPolicyWarn,
+		},
+	})
+	want := []string{
+		"java", "-jar", "/opt/dpt.jar",
+		"-f", "/work/input.apk",
+		"-o", "/work/output.apk",
+		"--no-sign",
+		"--enable-apk-sig-verify", "--apk-sig-policy", "warn",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args = %#v\nwant %#v", args, want)
+	}
+}
+
+func TestBuildDPTCommand_SigPolicyDefaultsToBlockWhenUnset(t *testing.T) {
+	args := BuildDPTCommand(EngineCommandInput{
+		JavaBin:    "java",
+		JarPath:    "/opt/dpt.jar",
+		InputPath:  "/work/input.apk",
+		OutputPath: "/work/output.apk",
+		RulesPath:  "/work/vmp-rules.txt",
+		Strategy: model.Strategy{
+			Signature: true,
+		},
+	})
+	if countArg(args, "--apk-sig-policy") != 1 {
+		t.Fatalf("apk-sig-policy flag count = %d, want 1 in %#v", countArg(args, "--apk-sig-policy"), args)
+	}
+	for i, arg := range args {
+		if arg == "--apk-sig-policy" {
+			if i+1 >= len(args) || args[i+1] != "block" {
+				t.Fatalf("apk-sig-policy value = %v, want block in %#v", args[i+1:], args)
+			}
+		}
 	}
 }
 
@@ -117,13 +166,6 @@ func TestResolveEffectiveFlags(t *testing.T) {
 			want:     EffectiveFlags{},
 		},
 		{
-			name: "debugger alone does not enable EmulatorDetect",
-			strategy: model.Strategy{
-				Debugger: true,
-			},
-			want: EffectiveFlags{},
-		},
-		{
 			name: "emulator and root detect",
 			strategy: model.Strategy{
 				Emulator:   true,
@@ -139,11 +181,19 @@ func TestResolveEffectiveFlags(t *testing.T) {
 			want: EffectiveFlags{HookDetect: true},
 		},
 		{
-			name: "signature",
+			name: "signature defaults sig policy to block when unset",
 			strategy: model.Strategy{
 				Signature: true,
 			},
-			want: EffectiveFlags{SigVerify: true},
+			want: EffectiveFlags{SigVerify: true, SigPolicy: model.SigPolicyBlock},
+		},
+		{
+			name: "signature with explicit warn policy",
+			strategy: model.Strategy{
+				Signature: true,
+				SigPolicy: model.SigPolicyWarn,
+			},
+			want: EffectiveFlags{SigVerify: true, SigPolicy: model.SigPolicyWarn},
 		},
 		{
 			name: "string and assets encrypt",
@@ -168,11 +218,20 @@ func TestResolveEffectiveFlags(t *testing.T) {
 			want: EffectiveFlags{VMPEnabled: true},
 		},
 		{
-			name: "so shell aes does not enable vmp",
+			name: "so shell none does not enable vmp",
 			strategy: model.Strategy{
-				SoShell: model.SoShellAES,
+				SoShell: model.SoShellNone,
 			},
 			want: EffectiveFlags{},
+		},
+		{
+			name: "screenshot protect, file integrity check, proxy detect pass through directly",
+			strategy: model.Strategy{
+				ScreenshotProtect:  true,
+				FileIntegrityCheck: true,
+				ProxyDetect:        true,
+			},
+			want: EffectiveFlags{ScreenshotProtect: true, FileIntegrityCheck: true, ProxyDetect: true},
 		},
 	}
 

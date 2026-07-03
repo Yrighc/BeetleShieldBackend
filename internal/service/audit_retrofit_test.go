@@ -58,7 +58,8 @@ func TestStrategyService_SaveRecordsAuditAndValidationFailureDoesNot(t *testing.
 
 	svc := service.NewStrategyService(repository.NewStrategyRepository(database), auditService)
 	saved, err := svc.Save(service.SaveStrategyInput{
-		DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70,
+		DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP, SoStrength: 70,
+		SigPolicy: model.SigPolicyWarn,
 	}, actorID, marker)
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -70,7 +71,7 @@ func TestStrategyService_SaveRecordsAuditAndValidationFailureDoesNot(t *testing.
 	}
 
 	_, err = svc.Save(service.SaveStrategyInput{
-		DexLevel: "bad-level", SoShell: model.SoShellAES, SoStrength: 70,
+		DexLevel: "bad-level", SoShell: model.SoShellVMP, SoStrength: 70,
 	}, actorID, marker)
 	if err != service.ErrInvalidDexLevel {
 		t.Fatalf("Save() validation error = %v, want %v", err, service.ErrInvalidDexLevel)

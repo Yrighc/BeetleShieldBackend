@@ -67,13 +67,6 @@ func TestBuildHardeningReport_NoStrategyScoresMaxRiskAndCritical(t *testing.T) {
 	}
 }
 
-func TestBuildHardeningReport_DebuggerFieldAloneDoesNotReduceRisk(t *testing.T) {
-	report := service.BuildHardeningReport(baseReportTask(model.Strategy{Debugger: true}), "v1")
-	if report.AfterScore != 100 {
-		t.Fatalf("AfterScore = %d, want 100: Strategy.Debugger is not wired to any dpt.jar flag and must not affect scoring", report.AfterScore)
-	}
-}
-
 func TestBuildHardeningReport_FiveDimensionsWithMergedAntiDebug(t *testing.T) {
 	strategy := model.Strategy{
 		Emulator: true, // anti-debug/env sub-score: 15/15
@@ -185,7 +178,6 @@ func TestResolveRiskLevel_MatchesBuildHardeningReportRiskLevel(t *testing.T) {
 		fullyHardenedStrategy(),
 		{Emulator: true, RootDetect: true},
 		{Frida: true, DexLevel: model.DexLevelHigh},
-		{Debugger: true},
 	}
 
 	for i, strategy := range cases {

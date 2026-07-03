@@ -268,15 +268,16 @@ func createWorkerTask(t *testing.T, database *gorm.DB, repo *repository.Hardenin
 	storage.objects[app.ObjectKey] = []byte("input apk")
 
 	task := model.HardeningTask{
-		TaskNo:                   fmt.Sprintf("%s-%06x", scope.taskPrefix, checksumString(suffix)&0xffffff),
-		AppID:                    app.ID,
-		Status:                   model.HardeningTaskStatusQueued,
-		StrategyName:             "默认加固模板",
-		StrategySnapshot:         model.Strategy{DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, RootDetect: true, Signature: true},
-		VMPRulesText:             "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
-		EnableFileIntegrityCheck: true,
-		EnableProxyDetect:        true,
-		CreatedBy:                1,
+		TaskNo:       fmt.Sprintf("%s-%06x", scope.taskPrefix, checksumString(suffix)&0xffffff),
+		AppID:        app.ID,
+		Status:       model.HardeningTaskStatusQueued,
+		StrategyName: "默认加固模板",
+		StrategySnapshot: model.Strategy{
+			DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, RootDetect: true, Signature: true,
+			FileIntegrityCheck: true, ProxyDetect: true,
+			VMPRulesText: "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		},
+		CreatedBy: 1,
 	}
 	if err := repo.CreateTaskWithStepsForApp(&task, model.AppStatusProcessing); err != nil {
 		t.Fatalf("CreateTaskWithStepsForApp() error = %v", err)

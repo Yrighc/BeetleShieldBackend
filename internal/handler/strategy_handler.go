@@ -36,22 +36,26 @@ func (h *StrategyHandler) GetCurrent(c *gin.Context) {
 }
 
 type saveStrategyRequest struct {
-	Name          string                    `json:"name"`
-	Description   string                    `json:"description"`
-	Frida         bool                      `json:"frida"`
-	Xposed        bool                      `json:"xposed"`
-	Debugger      bool                      `json:"debugger"`
-	Emulator      bool                      `json:"emulator"`
-	DexLevel      model.DexObfuscationLevel `json:"dexLevel" binding:"required"`
-	StringEncrypt bool                      `json:"stringEncrypt"`
-	ResMix        bool                      `json:"resMix"`
-	SoShell       model.SoShellType         `json:"soShell" binding:"required"`
-	SoStrength    int                       `json:"soStrength"`
-	TargetSos     []string                  `json:"targetSos"`
-	RootDetect    bool                      `json:"rootDetect"`
-	Signature     bool                      `json:"signature"`
-	AntiHook      bool                      `json:"antiHook"`
-	ResEncrypt    bool                      `json:"resEncrypt"`
+	Name               string                    `json:"name"`
+	Description        string                    `json:"description"`
+	Frida              bool                      `json:"frida"`
+	Xposed             bool                      `json:"xposed"`
+	Emulator           bool                      `json:"emulator"`
+	DexLevel           model.DexObfuscationLevel `json:"dexLevel" binding:"required"`
+	StringEncrypt      bool                      `json:"stringEncrypt"`
+	ResMix             bool                      `json:"resMix"`
+	SoShell            model.SoShellType         `json:"soShell" binding:"required"`
+	SoStrength         int                       `json:"soStrength"`
+	TargetSos          []string                  `json:"targetSos"`
+	RootDetect         bool                      `json:"rootDetect"`
+	Signature          bool                      `json:"signature"`
+	SigPolicy          model.SigPolicy           `json:"sigPolicy" binding:"required"`
+	AntiHook           bool                      `json:"antiHook"`
+	ResEncrypt         bool                      `json:"resEncrypt"`
+	ScreenshotProtect  bool                      `json:"screenshotProtect"`
+	FileIntegrityCheck bool                      `json:"fileIntegrityCheck"`
+	ProxyDetect        bool                      `json:"proxyDetect"`
+	VMPRulesText       string                    `json:"vmpRulesText"`
 }
 
 func (h *StrategyHandler) SaveCurrent(c *gin.Context) {
@@ -64,10 +68,12 @@ func (h *StrategyHandler) SaveCurrent(c *gin.Context) {
 	userID := c.GetUint(middleware.ContextUserIDKey)
 
 	saved, err := h.strategyService.SaveCurrent(service.SaveStrategyInput{
-		Frida: req.Frida, Xposed: req.Xposed, Debugger: req.Debugger, Emulator: req.Emulator,
+		Frida: req.Frida, Xposed: req.Xposed, Emulator: req.Emulator,
 		DexLevel: req.DexLevel, StringEncrypt: req.StringEncrypt, ResMix: req.ResMix,
 		SoShell: req.SoShell, SoStrength: req.SoStrength, TargetSos: req.TargetSos,
-		RootDetect: req.RootDetect, Signature: req.Signature, AntiHook: req.AntiHook, ResEncrypt: req.ResEncrypt,
+		RootDetect: req.RootDetect, Signature: req.Signature, SigPolicy: req.SigPolicy, AntiHook: req.AntiHook, ResEncrypt: req.ResEncrypt,
+		ScreenshotProtect: req.ScreenshotProtect, FileIntegrityCheck: req.FileIntegrityCheck, ProxyDetect: req.ProxyDetect,
+		VMPRulesText: req.VMPRulesText,
 	}, userID, c.ClientIP())
 	if err != nil {
 		switch {
@@ -77,6 +83,8 @@ func (h *StrategyHandler) SaveCurrent(c *gin.Context) {
 			response.Error(c, http.StatusBadRequest, 40013, err.Error())
 		case errors.Is(err, service.ErrInvalidSoStrength):
 			response.Error(c, http.StatusBadRequest, 40014, err.Error())
+		case errors.Is(err, service.ErrInvalidSigPolicy):
+			response.Error(c, http.StatusBadRequest, 40017, err.Error())
 		default:
 			response.Error(c, http.StatusInternalServerError, 50010, "保存策略失败")
 		}
@@ -181,10 +189,12 @@ func strategyPayloadFromRequest(req saveStrategyRequest) service.StrategyPayload
 		Name:        req.Name,
 		Description: req.Description,
 		SaveStrategyInput: service.SaveStrategyInput{
-			Frida: req.Frida, Xposed: req.Xposed, Debugger: req.Debugger, Emulator: req.Emulator,
+			Frida: req.Frida, Xposed: req.Xposed, Emulator: req.Emulator,
 			DexLevel: req.DexLevel, StringEncrypt: req.StringEncrypt, ResMix: req.ResMix,
 			SoShell: req.SoShell, SoStrength: req.SoStrength, TargetSos: req.TargetSos,
-			RootDetect: req.RootDetect, Signature: req.Signature, AntiHook: req.AntiHook, ResEncrypt: req.ResEncrypt,
+			RootDetect: req.RootDetect, Signature: req.Signature, SigPolicy: req.SigPolicy, AntiHook: req.AntiHook, ResEncrypt: req.ResEncrypt,
+			ScreenshotProtect: req.ScreenshotProtect, FileIntegrityCheck: req.FileIntegrityCheck, ProxyDetect: req.ProxyDetect,
+			VMPRulesText: req.VMPRulesText,
 		},
 	}
 }
@@ -199,6 +209,8 @@ func writeStrategyMutationError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadRequest, 40013, err.Error())
 	case errors.Is(err, service.ErrInvalidSoStrength):
 		response.Error(c, http.StatusBadRequest, 40014, err.Error())
+	case errors.Is(err, service.ErrInvalidSigPolicy):
+		response.Error(c, http.StatusBadRequest, 40017, err.Error())
 	case errors.Is(err, service.ErrStrategyNameExists):
 		response.Error(c, http.StatusConflict, 40912, "策略名称已存在")
 	case errors.Is(err, service.ErrStrategyNotFound):

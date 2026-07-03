@@ -41,28 +41,25 @@ const (
 )
 
 type HardeningTask struct {
-	ID                       uint                `gorm:"primaryKey" json:"id"`
-	TaskNo                   string              `gorm:"size:40;uniqueIndex;not null" json:"taskNo"`
-	AppID                    uint                `gorm:"index;not null" json:"appId"`
-	App                      App                 `gorm:"foreignKey:AppID" json:"app,omitempty"`
-	Status                   HardeningTaskStatus `gorm:"size:20;index;not null" json:"status"`
-	StrategyName             string              `gorm:"size:120;not null" json:"strategyName"`
-	StrategySnapshot         Strategy            `gorm:"serializer:json" json:"strategySnapshot"`
-	VMPRulesText             string              `gorm:"type:text" json:"vmpRulesText"`
-	EnableFileIntegrityCheck bool                `json:"enableFileIntegrityCheck"`
-	EnableProxyDetect        bool                `json:"enableProxyDetect"`
-	UnsignedObjectKey        string              `gorm:"size:500" json:"unsignedObjectKey"`
-	UnsignedFileSize         int64               `json:"unsignedFileSize"`
-	UnsignedSHA256           string              `gorm:"size:64" json:"unsignedSha256"`
-	SignedTestObjectKey      string              `gorm:"size:500" json:"signedTestObjectKey"`
-	SignedTestFileSize       int64               `json:"signedTestFileSize"`
-	SignedTestSHA256         string              `gorm:"size:64" json:"signedTestSha256"`
-	ErrorSummary             string              `gorm:"size:500" json:"errorSummary"`
-	CreatedBy                uint                `gorm:"not null" json:"createdBy"`
-	StartedAt                *time.Time          `json:"startedAt"`
-	FinishedAt               *time.Time          `json:"finishedAt"`
-	CreatedAt                time.Time           `json:"createdAt"`
-	UpdatedAt                time.Time           `json:"updatedAt"`
+	ID                  uint                `gorm:"primaryKey" json:"id"`
+	TaskNo              string              `gorm:"size:40;uniqueIndex;not null" json:"taskNo"`
+	AppID               uint                `gorm:"index;not null" json:"appId"`
+	App                 App                 `gorm:"foreignKey:AppID" json:"app,omitempty"`
+	Status              HardeningTaskStatus `gorm:"size:20;index;not null" json:"status"`
+	StrategyName        string              `gorm:"size:120;not null" json:"strategyName"`
+	StrategySnapshot    Strategy            `gorm:"serializer:json" json:"strategySnapshot"`
+	UnsignedObjectKey   string              `gorm:"size:500" json:"unsignedObjectKey"`
+	UnsignedFileSize    int64               `json:"unsignedFileSize"`
+	UnsignedSHA256      string              `gorm:"size:64" json:"unsignedSha256"`
+	SignedTestObjectKey string              `gorm:"size:500" json:"signedTestObjectKey"`
+	SignedTestFileSize  int64               `json:"signedTestFileSize"`
+	SignedTestSHA256    string              `gorm:"size:64" json:"signedTestSha256"`
+	ErrorSummary        string              `gorm:"size:500" json:"errorSummary"`
+	CreatedBy           uint                `gorm:"not null" json:"createdBy"`
+	StartedAt           *time.Time          `json:"startedAt"`
+	FinishedAt          *time.Time          `json:"finishedAt"`
+	CreatedAt           time.Time           `json:"createdAt"`
+	UpdatedAt           time.Time           `json:"updatedAt"`
 }
 
 func (HardeningTask) TableName() string {

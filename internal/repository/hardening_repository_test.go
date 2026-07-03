@@ -139,13 +139,15 @@ func createRepoApp(t *testing.T, appRepo *AppRepository, scope hardeningRepoTest
 
 func newRepoTask(scope hardeningRepoTestScope, suffix string, appID uint, status model.HardeningTaskStatus) model.HardeningTask {
 	return model.HardeningTask{
-		TaskNo:           scope.taskNo(suffix),
-		AppID:            appID,
-		Status:           status,
-		StrategyName:     "默认加固模板",
-		StrategySnapshot: model.Strategy{DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP},
-		VMPRulesText:     "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
-		CreatedBy:        1,
+		TaskNo:       scope.taskNo(suffix),
+		AppID:        appID,
+		Status:       status,
+		StrategyName: "默认加固模板",
+		StrategySnapshot: model.Strategy{
+			DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP,
+			VMPRulesText: "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		},
+		CreatedBy: 1,
 	}
 }
 
@@ -324,8 +326,8 @@ func TestHardeningRepository_QueueStepLogAndCompletion(t *testing.T) {
 	if found.StrategySnapshot.DexLevel != model.DexLevelHigh || found.StrategySnapshot.SoShell != model.SoShellVMP {
 		t.Fatalf("unexpected StrategySnapshot: %+v", found.StrategySnapshot)
 	}
-	if found.VMPRulesText != "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**" {
-		t.Fatalf("VMPRulesText = %q", found.VMPRulesText)
+	if found.StrategySnapshot.VMPRulesText != "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**" {
+		t.Fatalf("StrategySnapshot.VMPRulesText = %q", found.StrategySnapshot.VMPRulesText)
 	}
 }
 

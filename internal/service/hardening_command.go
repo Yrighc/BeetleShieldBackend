@@ -14,30 +14,32 @@ import (
 const DefaultStrategyName = "默认加固策略"
 
 // EffectiveFlags captures which dpt.jar engine flags a Strategy actually
-// turns on. This is deliberately narrower than the Strategy struct itself:
-// Strategy.Debugger and SoShell values "aes"/"custom_so" are stored and
-// editable in Strategy Center but were never wired to a real dpt.jar
-// parameter, so they must not silently imply protection anywhere that reads
-// this struct (BuildDPTCommand today, the hardening report scorer next).
+// turns on. dpt.jar's anti-debug (ptrace) protection is always compiled in
+// and has no command-line toggle, and its only real SO-shielding mode is
+// VMP, so Strategy no longer exposes a "debugger" switch or aes/custom_so
+// SoShell values that would silently imply protection the engine can't
+// actually provide.
 type EffectiveFlags struct {
-	EmulatorDetect bool
-	RootDetect     bool
-	HookDetect     bool
-	SigVerify      bool
-	StringEncrypt  bool
-	AssetsEncrypt  bool
-	VMPEnabled     bool
+	EmulatorDetect     bool
+	RootDetect         bool
+	HookDetect         bool
+	SigVerify          bool
+	SigPolicy          model.SigPolicy
+	StringEncrypt      bool
+	AssetsEncrypt      bool
+	VMPEnabled         bool
+	ScreenshotProtect  bool
+	FileIntegrityCheck bool
+	ProxyDetect        bool
 }
 
 type EngineCommandInput struct {
-	JavaBin                  string
-	JarPath                  string
-	InputPath                string
-	OutputPath               string
-	RulesPath                string
-	Strategy                 model.Strategy
-	EnableFileIntegrityCheck bool
-	EnableProxyDetect        bool
+	JavaBin    string
+	JarPath    string
+	InputPath  string
+	OutputPath string
+	RulesPath  string
+	Strategy   model.Strategy
 }
 
 type ArtifactInfo struct {
@@ -56,15 +58,32 @@ func NormalizeVMPRules(input string, fallback string) string {
 }
 
 func ResolveEffectiveFlags(s model.Strategy) EffectiveFlags {
-	return EffectiveFlags{
-		EmulatorDetect: s.Emulator,
-		RootDetect:     s.RootDetect,
-		HookDetect:     s.AntiHook || s.Frida || s.Xposed,
-		SigVerify:      s.Signature,
-		StringEncrypt:  s.StringEncrypt,
-		AssetsEncrypt:  s.ResEncrypt,
-		VMPEnabled:     s.DexLevel == model.DexLevelHigh || s.SoShell == model.SoShellVMP,
+	flags := EffectiveFlags{
+		EmulatorDetect:     s.Emulator,
+		RootDetect:         s.RootDetect,
+		HookDetect:         s.AntiHook || s.Frida || s.Xposed,
+		SigVerify:          s.Signature,
+		StringEncrypt:      s.StringEncrypt,
+		AssetsEncrypt:      s.ResEncrypt,
+		VMPEnabled:         s.DexLevel == model.DexLevelHigh || s.SoShell == model.SoShellVMP,
+		ScreenshotProtect:  s.ScreenshotProtect,
+		FileIntegrityCheck: s.FileIntegrityCheck,
+		ProxyDetect:        s.ProxyDetect,
 	}
+	if flags.SigVerify {
+		flags.SigPolicy = resolveSigPolicy(s.SigPolicy)
+	}
+	return flags
+}
+
+// resolveSigPolicy defaults anything other than an explicit "warn" to
+// "block", so Strategy rows saved before SigPolicy existed keep behaving
+// exactly like the previously hardcoded "block" policy.
+func resolveSigPolicy(p model.SigPolicy) model.SigPolicy {
+	if p == model.SigPolicyWarn {
+		return model.SigPolicyWarn
+	}
+	return model.SigPolicyBlock
 }
 
 func BuildDPTCommand(input EngineCommandInput) []string {
@@ -89,10 +108,19 @@ func BuildDPTCommand(input EngineCommandInput) []string {
 		args = append(args, "--enable-root-detect")
 	}
 	if flags.SigVerify {
-		args = append(args, "--enable-apk-sig-verify", "--apk-sig-policy", "block")
+		args = append(args, "--enable-apk-sig-verify", "--apk-sig-policy", string(flags.SigPolicy))
+	}
+	if flags.ScreenshotProtect {
+		args = append(args, "--enable-screenshot-protect")
+	}
+	if flags.FileIntegrityCheck {
+		args = append(args, "--enable-file-integrity-check")
 	}
 	if flags.HookDetect {
 		args = append(args, "--enable-hook-detect")
+	}
+	if flags.ProxyDetect {
+		args = append(args, "--enable-proxy-detect")
 	}
 	if flags.StringEncrypt {
 		args = append(args, "--enable-string-encrypt")
@@ -102,12 +130,6 @@ func BuildDPTCommand(input EngineCommandInput) []string {
 	}
 	if flags.VMPEnabled {
 		args = append(args, "--enable-vmp", "--vmp-rules", input.RulesPath)
-	}
-	if input.EnableFileIntegrityCheck {
-		args = append(args, "--enable-file-integrity-check")
-	}
-	if input.EnableProxyDetect {
-		args = append(args, "--enable-proxy-detect")
 	}
 
 	return args

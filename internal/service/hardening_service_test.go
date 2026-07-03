@@ -163,8 +163,8 @@ func TestHardeningService_CreateDefaultsAndSetsAppProcessing(t *testing.T) {
 	if detail.Task.StrategyName != service.DefaultStrategyName {
 		t.Fatalf("strategy name = %q", detail.Task.StrategyName)
 	}
-	if !strings.Contains(detail.Task.VMPRulesText, "**") {
-		t.Fatalf("rules text = %q", detail.Task.VMPRulesText)
+	if !strings.Contains(detail.Task.StrategySnapshot.VMPRulesText, "**") {
+		t.Fatalf("rules text = %q", detail.Task.StrategySnapshot.VMPRulesText)
 	}
 	if len(detail.Steps) != 6 {
 		t.Fatalf("len(steps) = %d, want 6", len(detail.Steps))
@@ -237,16 +237,17 @@ func TestHardeningService_CreateRejectsActiveTaskRecordsFailureAudit(t *testing.
 func TestHardeningService_CreateUsesCustomSnapshotAndRules(t *testing.T) {
 	svc, appRepo, _, scope := setupHardeningServiceTest(t)
 	app := createHardeningServiceApp(t, appRepo, scope, "custom")
-	strategy := model.Strategy{DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, RootDetect: true}
+	strategy := model.Strategy{
+		DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, RootDetect: true,
+		FileIntegrityCheck: true, ProxyDetect: true,
+		VMPRulesText: "com.example.**",
+	}
 
 	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{
-		AppID:                    app.ID,
-		StrategyName:             "信息院 App 加固模板",
-		StrategySnapshot:         &strategy,
-		VMPRulesText:             "com.example.**",
-		EnableFileIntegrityCheck: true,
-		EnableProxyDetect:        true,
-		CreatedBy:                7,
+		AppID:            app.ID,
+		StrategyName:     "信息院 App 加固模板",
+		StrategySnapshot: &strategy,
+		CreatedBy:        7,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -257,11 +258,11 @@ func TestHardeningService_CreateUsesCustomSnapshotAndRules(t *testing.T) {
 	if detail.Task.StrategySnapshot.DexLevel != model.DexLevelLow || !detail.Task.StrategySnapshot.RootDetect {
 		t.Fatalf("strategy snapshot = %+v", detail.Task.StrategySnapshot)
 	}
-	if detail.Task.VMPRulesText != "com.example.**" {
-		t.Fatalf("rules = %q", detail.Task.VMPRulesText)
+	if detail.Task.StrategySnapshot.VMPRulesText != "com.example.**" {
+		t.Fatalf("rules = %q", detail.Task.StrategySnapshot.VMPRulesText)
 	}
-	if !detail.Task.EnableFileIntegrityCheck || !detail.Task.EnableProxyDetect {
-		t.Fatalf("advanced flags not preserved: %+v", detail.Task)
+	if !detail.Task.StrategySnapshot.FileIntegrityCheck || !detail.Task.StrategySnapshot.ProxyDetect {
+		t.Fatalf("advanced flags not preserved: %+v", detail.Task.StrategySnapshot)
 	}
 }
 
@@ -272,8 +273,8 @@ func TestHardeningService_CreateUsesStrategyID(t *testing.T) {
 	strategy, err := strategySvc.Create(service.StrategyPayloadInput{
 		Name: "数信学院加固策略",
 		SaveStrategyInput: service.SaveStrategyInput{
-			DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES,
-			SoStrength: 70, RootDetect: true, Signature: true,
+			DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP,
+			SoStrength: 70, RootDetect: true, Signature: true, SigPolicy: model.SigPolicyWarn,
 		},
 	}, 515151, "")
 	if err != nil {
@@ -305,7 +306,7 @@ func TestHardeningService_CreateUsesDefaultStrategyWhenStrategyIDMissing(t *test
 	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), nil)
 	if _, err := strategySvc.SaveCurrent(service.SaveStrategyInput{
 		DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30,
-		Signature: true,
+		Signature: true, SigPolicy: model.SigPolicyWarn,
 	}, 515151, ""); err != nil {
 		t.Fatalf("SaveCurrent() error = %v", err)
 	}
@@ -473,11 +474,13 @@ func TestHardeningService_CreateRejectsConcurrentActiveTask(t *testing.T) {
 	svc, appRepo, repo, scope := setupHardeningServiceTest(t)
 	app := createHardeningServiceApp(t, appRepo, scope, "concurrent")
 	input := service.CreateHardeningTaskInput{
-		AppID:            app.ID,
-		CreatedBy:        42,
-		StrategyName:     "concurrent",
-		StrategySnapshot: &model.Strategy{DexLevel: model.DexLevelLow, SoShell: model.SoShellNone},
-		VMPRulesText:     "concurrent.**",
+		AppID:        app.ID,
+		CreatedBy:    42,
+		StrategyName: "concurrent",
+		StrategySnapshot: &model.Strategy{
+			DexLevel: model.DexLevelLow, SoShell: model.SoShellNone,
+			VMPRulesText: "concurrent.**",
+		},
 	}
 
 	start := make(chan struct{})

@@ -24,13 +24,10 @@ func NewHardeningHandler(svc *service.HardeningService, dashboardSvc *service.Da
 }
 
 type createHardeningTaskRequest struct {
-	AppID                    uint            `json:"appId" binding:"required"`
-	StrategyID               uint            `json:"strategyId"`
-	StrategyName             string          `json:"strategyName"`
-	StrategySnapshot         *model.Strategy `json:"strategySnapshot"`
-	VMPRulesText             string          `json:"vmpRulesText"`
-	EnableFileIntegrityCheck bool            `json:"enableFileIntegrityCheck"`
-	EnableProxyDetect        bool            `json:"enableProxyDetect"`
+	AppID            uint            `json:"appId" binding:"required"`
+	StrategyID       uint            `json:"strategyId"`
+	StrategyName     string          `json:"strategyName"`
+	StrategySnapshot *model.Strategy `json:"strategySnapshot"`
 }
 
 func (h *HardeningHandler) Create(c *gin.Context) {
@@ -41,15 +38,12 @@ func (h *HardeningHandler) Create(c *gin.Context) {
 	}
 
 	detail, err := h.svc.Create(c.Request.Context(), service.CreateHardeningTaskInput{
-		AppID:                    req.AppID,
-		StrategyID:               req.StrategyID,
-		StrategyName:             req.StrategyName,
-		StrategySnapshot:         req.StrategySnapshot,
-		VMPRulesText:             req.VMPRulesText,
-		EnableFileIntegrityCheck: req.EnableFileIntegrityCheck,
-		EnableProxyDetect:        req.EnableProxyDetect,
-		CreatedBy:                c.GetUint(middleware.ContextUserIDKey),
-		IP:                       c.ClientIP(),
+		AppID:            req.AppID,
+		StrategyID:       req.StrategyID,
+		StrategyName:     req.StrategyName,
+		StrategySnapshot: req.StrategySnapshot,
+		CreatedBy:        c.GetUint(middleware.ContextUserIDKey),
+		IP:               c.ClientIP(),
 	})
 	if err != nil {
 		switch {

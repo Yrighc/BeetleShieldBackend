@@ -14,6 +14,7 @@ var (
 	ErrInvalidDexLevel       = errors.New("invalid dex obfuscation level")
 	ErrInvalidSoShell        = errors.New("invalid so shell type")
 	ErrInvalidSoStrength     = errors.New("so strength must be between 0 and 100")
+	ErrInvalidSigPolicy      = errors.New("invalid signature verification policy")
 	ErrStrategyNotFound      = errors.New("strategy not found")
 	ErrStrategyNameRequired  = errors.New("strategy name is required")
 	ErrStrategyNameExists    = errors.New("strategy name already exists")
@@ -21,20 +22,24 @@ var (
 )
 
 type SaveStrategyInput struct {
-	Frida         bool
-	Xposed        bool
-	Debugger      bool
-	Emulator      bool
-	DexLevel      model.DexObfuscationLevel
-	StringEncrypt bool
-	ResMix        bool
-	SoShell       model.SoShellType
-	SoStrength    int
-	TargetSos     []string
-	RootDetect    bool
-	Signature     bool
-	AntiHook      bool
-	ResEncrypt    bool
+	Frida              bool
+	Xposed             bool
+	Emulator           bool
+	DexLevel           model.DexObfuscationLevel
+	StringEncrypt      bool
+	ResMix             bool
+	SoShell            model.SoShellType
+	SoStrength         int
+	TargetSos          []string
+	RootDetect         bool
+	Signature          bool
+	SigPolicy          model.SigPolicy
+	AntiHook           bool
+	ResEncrypt         bool
+	ScreenshotProtect  bool
+	FileIntegrityCheck bool
+	ProxyDetect        bool
+	VMPRulesText       string
 }
 
 type StrategyPayloadInput struct {
@@ -45,25 +50,28 @@ type StrategyPayloadInput struct {
 
 var templates = map[string]model.Strategy{
 	"finance": {
-		Frida: true, Xposed: true, Debugger: true, Emulator: true,
+		Frida: true, Xposed: true, Emulator: true,
 		DexLevel: model.DexLevelHigh, StringEncrypt: true, ResMix: true,
 		SoShell: model.SoShellVMP, SoStrength: 90,
 		TargetSos:  []string{"libnative-lib.so", "libsec.so"},
-		RootDetect: true, Signature: true, AntiHook: true, ResEncrypt: true,
+		RootDetect: true, Signature: true, SigPolicy: model.SigPolicyBlock, AntiHook: true, ResEncrypt: true,
+		ScreenshotProtect: true, FileIntegrityCheck: true, ProxyDetect: true,
 	},
 	"game": {
-		Frida: true, Xposed: false, Debugger: true, Emulator: false,
+		Frida: true, Xposed: false, Emulator: false,
 		DexLevel: model.DexLevelMedium, StringEncrypt: true, ResMix: false,
-		SoShell: model.SoShellAES, SoStrength: 70,
+		SoShell: model.SoShellVMP, SoStrength: 70,
 		TargetSos:  []string{"libunity.so", "libmain.so"},
-		RootDetect: true, Signature: true, AntiHook: true, ResEncrypt: false,
+		RootDetect: true, Signature: true, SigPolicy: model.SigPolicyWarn, AntiHook: true, ResEncrypt: false,
+		ScreenshotProtect: true, FileIntegrityCheck: true, ProxyDetect: false,
 	},
 	"basic": {
-		Frida: true, Xposed: false, Debugger: true, Emulator: false,
+		Frida: true, Xposed: false, Emulator: false,
 		DexLevel: model.DexLevelLow, StringEncrypt: false, ResMix: false,
 		SoShell: model.SoShellNone, SoStrength: 30,
 		TargetSos:  []string{},
-		RootDetect: false, Signature: true, AntiHook: false, ResEncrypt: false,
+		RootDetect: false, Signature: true, SigPolicy: model.SigPolicyWarn, AntiHook: false, ResEncrypt: false,
+		ScreenshotProtect: false, FileIntegrityCheck: false, ProxyDetect: false,
 	},
 }
 
@@ -74,10 +82,13 @@ var validDexLevels = map[model.DexObfuscationLevel]bool{
 }
 
 var validSoShells = map[model.SoShellType]bool{
-	model.SoShellNone:     true,
-	model.SoShellAES:      true,
-	model.SoShellVMP:      true,
-	model.SoShellCustomSo: true,
+	model.SoShellNone: true,
+	model.SoShellVMP:  true,
+}
+
+var validSigPolicies = map[model.SigPolicy]bool{
+	model.SigPolicyWarn:  true,
+	model.SigPolicyBlock: true,
 }
 
 type StrategyService struct {
@@ -148,14 +159,19 @@ func (s *StrategyService) SaveCurrent(input SaveStrategyInput, updatedBy uint, i
 	if input.SoStrength < 0 || input.SoStrength > 100 {
 		return nil, ErrInvalidSoStrength
 	}
+	if !validSigPolicies[input.SigPolicy] {
+		return nil, ErrInvalidSigPolicy
+	}
 
 	strategy = &model.Strategy{
 		Name: DefaultStrategyName, IsDefault: true,
-		Frida: input.Frida, Xposed: input.Xposed, Debugger: input.Debugger, Emulator: input.Emulator,
+		Frida: input.Frida, Xposed: input.Xposed, Emulator: input.Emulator,
 		DexLevel: input.DexLevel, StringEncrypt: input.StringEncrypt, ResMix: input.ResMix,
 		SoShell: input.SoShell, SoStrength: input.SoStrength, TargetSos: input.TargetSos,
-		RootDetect: input.RootDetect, Signature: input.Signature, AntiHook: input.AntiHook, ResEncrypt: input.ResEncrypt,
-		CreatedBy: updatedBy, UpdatedBy: updatedBy,
+		RootDetect: input.RootDetect, Signature: input.Signature, SigPolicy: input.SigPolicy, AntiHook: input.AntiHook, ResEncrypt: input.ResEncrypt,
+		ScreenshotProtect: input.ScreenshotProtect, FileIntegrityCheck: input.FileIntegrityCheck, ProxyDetect: input.ProxyDetect,
+		VMPRulesText: input.VMPRulesText,
+		CreatedBy:    updatedBy, UpdatedBy: updatedBy,
 	}
 	if err := s.strategyRepo.SaveCurrent(strategy); err != nil {
 		return nil, err
@@ -187,11 +203,13 @@ func (s *StrategyService) Create(input StrategyPayloadInput, createdBy uint, ip 
 
 	strategy = &model.Strategy{
 		Name: strings.TrimSpace(input.Name), Description: strings.TrimSpace(input.Description),
-		Frida: input.Frida, Xposed: input.Xposed, Debugger: input.Debugger, Emulator: input.Emulator,
+		Frida: input.Frida, Xposed: input.Xposed, Emulator: input.Emulator,
 		DexLevel: input.DexLevel, StringEncrypt: input.StringEncrypt, ResMix: input.ResMix,
 		SoShell: input.SoShell, SoStrength: input.SoStrength, TargetSos: input.TargetSos,
-		RootDetect: input.RootDetect, Signature: input.Signature, AntiHook: input.AntiHook, ResEncrypt: input.ResEncrypt,
-		CreatedBy: createdBy, UpdatedBy: createdBy,
+		RootDetect: input.RootDetect, Signature: input.Signature, SigPolicy: input.SigPolicy, AntiHook: input.AntiHook, ResEncrypt: input.ResEncrypt,
+		ScreenshotProtect: input.ScreenshotProtect, FileIntegrityCheck: input.FileIntegrityCheck, ProxyDetect: input.ProxyDetect,
+		VMPRulesText: input.VMPRulesText,
+		CreatedBy:    createdBy, UpdatedBy: createdBy,
 	}
 	if err := s.strategyRepo.Create(strategy); err != nil {
 		return nil, err
@@ -217,7 +235,6 @@ func (s *StrategyService) Update(id uint, input StrategyPayloadInput, updatedBy 
 	existing.Description = strings.TrimSpace(input.Description)
 	existing.Frida = input.Frida
 	existing.Xposed = input.Xposed
-	existing.Debugger = input.Debugger
 	existing.Emulator = input.Emulator
 	existing.DexLevel = input.DexLevel
 	existing.StringEncrypt = input.StringEncrypt
@@ -227,8 +244,13 @@ func (s *StrategyService) Update(id uint, input StrategyPayloadInput, updatedBy 
 	existing.TargetSos = input.TargetSos
 	existing.RootDetect = input.RootDetect
 	existing.Signature = input.Signature
+	existing.SigPolicy = input.SigPolicy
 	existing.AntiHook = input.AntiHook
 	existing.ResEncrypt = input.ResEncrypt
+	existing.ScreenshotProtect = input.ScreenshotProtect
+	existing.FileIntegrityCheck = input.FileIntegrityCheck
+	existing.ProxyDetect = input.ProxyDetect
+	existing.VMPRulesText = input.VMPRulesText
 	existing.UpdatedBy = updatedBy
 	if err := s.strategyRepo.Update(existing); err != nil {
 		return nil, err
@@ -304,6 +326,9 @@ func validateStrategyFields(input SaveStrategyInput) error {
 	}
 	if input.SoStrength < 0 || input.SoStrength > 100 {
 		return ErrInvalidSoStrength
+	}
+	if !validSigPolicies[input.SigPolicy] {
+		return ErrInvalidSigPolicy
 	}
 	return nil
 }

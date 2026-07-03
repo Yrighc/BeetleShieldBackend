@@ -220,11 +220,13 @@ func TestHardeningHandler_CreateAllowsDeveloperAndRejectsAuditor(t *testing.T) {
 	defer cleanup()
 
 	body, err := json.Marshal(map[string]interface{}{
-		"appId":                    appID,
-		"strategyName":             "信息院 App 加固模板",
-		"vmpRulesText":             "com.example.**",
-		"enableFileIntegrityCheck": true,
-		"enableProxyDetect":        true,
+		"appId":        appID,
+		"strategyName": "信息院 App 加固模板",
+		"strategySnapshot": map[string]interface{}{
+			"fileIntegrityCheck": true,
+			"proxyDetect":        true,
+			"vmpRulesText":       "com.example.**",
+		},
 	})
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
@@ -251,8 +253,8 @@ func TestHardeningHandler_CreateAllowsDeveloperAndRejectsAuditor(t *testing.T) {
 	if created.Data.Task.AppID != appID {
 		t.Fatalf("created task appID = %d, want %d", created.Data.Task.AppID, appID)
 	}
-	if !created.Data.Task.EnableFileIntegrityCheck || !created.Data.Task.EnableProxyDetect {
-		t.Fatalf("advanced flags not preserved: %+v", created.Data.Task)
+	if !created.Data.Task.StrategySnapshot.FileIntegrityCheck || !created.Data.Task.StrategySnapshot.ProxyDetect {
+		t.Fatalf("advanced flags not preserved: %+v", created.Data.Task.StrategySnapshot)
 	}
 
 	createLog := findAuditLogForTarget(t, auditRepo, string(model.AuditActionHardeningCreate), "hardening_task", created.Data.Task.ID)
@@ -282,7 +284,7 @@ func TestHardeningHandler_CreateUsesStrategyID(t *testing.T) {
 
 	strategy := &model.Strategy{
 		Name: "数信学院加固策略", DexLevel: model.DexLevelMedium,
-		SoShell: model.SoShellAES, SoStrength: 70,
+		SoShell: model.SoShellVMP, SoStrength: 70,
 		RootDetect: true, Signature: true,
 		CreatedBy: 515151, UpdatedBy: 515151,
 	}

@@ -194,7 +194,7 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 		if err := w.storage.GetObjectToFile(taskCtx, task.App.ObjectKey, inputPath); err != nil {
 			return err
 		}
-		rules := service.NormalizeVMPRules(task.VMPRulesText, w.cfg.DefaultVMPRules)
+		rules := service.NormalizeVMPRules(task.StrategySnapshot.VMPRulesText, w.cfg.DefaultVMPRules)
 		return os.WriteFile(rulesPath, []byte(rules), 0o600)
 	}); err != nil {
 		return err
@@ -207,14 +207,12 @@ func (w *HardeningWorker) runTask(ctx context.Context, task *model.HardeningTask
 	}
 
 	command := service.BuildDPTCommand(service.EngineCommandInput{
-		JavaBin:                  "java",
-		JarPath:                  w.cfg.JarPath,
-		InputPath:                inputPath,
-		OutputPath:               outputPath,
-		RulesPath:                rulesPath,
-		Strategy:                 task.StrategySnapshot,
-		EnableFileIntegrityCheck: task.EnableFileIntegrityCheck,
-		EnableProxyDetect:        task.EnableProxyDetect,
+		JavaBin:    "java",
+		JarPath:    w.cfg.JarPath,
+		InputPath:  inputPath,
+		OutputPath: outputPath,
+		RulesPath:  rulesPath,
+		Strategy:   task.StrategySnapshot,
 	})
 
 	if err := w.runStep(task.ID, model.HardeningStepApplyStrategy, func(step *model.HardeningStep) error {

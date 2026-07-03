@@ -27,15 +27,12 @@ type DownloadURLProvider interface {
 }
 
 type CreateHardeningTaskInput struct {
-	AppID                    uint
-	StrategyID               uint
-	StrategyName             string
-	StrategySnapshot         *model.Strategy
-	VMPRulesText             string
-	EnableFileIntegrityCheck bool
-	EnableProxyDetect        bool
-	CreatedBy                uint
-	IP                       string
+	AppID            uint
+	StrategyID       uint
+	StrategyName     string
+	StrategySnapshot *model.Strategy
+	CreatedBy        uint
+	IP               string
 }
 
 type HardeningTaskDetail struct {
@@ -124,17 +121,15 @@ func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTask
 	if strategyName == "" {
 		strategyName = DefaultStrategyName
 	}
+	strategy.VMPRulesText = NormalizeVMPRules(strategy.VMPRulesText, s.defaultVMPRules)
 
 	task := &model.HardeningTask{
-		TaskNo:                   generateHardeningTaskNo(time.Now()),
-		AppID:                    app.ID,
-		Status:                   model.HardeningTaskStatusQueued,
-		StrategyName:             strategyName,
-		StrategySnapshot:         strategy,
-		VMPRulesText:             NormalizeVMPRules(input.VMPRulesText, s.defaultVMPRules),
-		EnableFileIntegrityCheck: input.EnableFileIntegrityCheck,
-		EnableProxyDetect:        input.EnableProxyDetect,
-		CreatedBy:                input.CreatedBy,
+		TaskNo:           generateHardeningTaskNo(time.Now()),
+		AppID:            app.ID,
+		Status:           model.HardeningTaskStatusQueued,
+		StrategyName:     strategyName,
+		StrategySnapshot: strategy,
+		CreatedBy:        input.CreatedBy,
 	}
 
 	if err := s.hardeningRepo.CreateTaskWithStepsForApp(task, model.AppStatusProcessing); err != nil {

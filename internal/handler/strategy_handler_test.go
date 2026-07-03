@@ -117,10 +117,10 @@ func TestStrategySaveCurrent_AdminSucceedsThenGetCurrentReflectsIt(t *testing.T)
 	defer cleanup()
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"frida": true, "xposed": false, "debugger": true, "emulator": false,
+		"frida": true, "xposed": false, "emulator": false,
 		"dexLevel": "medium", "stringEncrypt": true, "resMix": false,
-		"soShell": "aes", "soStrength": 70, "targetSos": []string{"libunity.so"},
-		"rootDetect": true, "signature": true, "antiHook": true, "resEncrypt": false,
+		"soShell": "vmp", "soStrength": 70, "targetSos": []string{"libunity.so"},
+		"rootDetect": true, "signature": true, "sigPolicy": "warn", "antiHook": true, "resEncrypt": false,
 	})
 	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/strategies/current", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -182,10 +182,10 @@ func TestStrategyCRUD_AdminSucceedsAndDeveloperCanRead(t *testing.T) {
 
 	createBody, _ := json.Marshal(map[string]interface{}{
 		"name": "数信学院加固策略", "description": "高强度配置",
-		"frida": true, "xposed": true, "debugger": true, "emulator": false,
+		"frida": true, "xposed": true, "emulator": false,
 		"dexLevel": "high", "stringEncrypt": true, "resMix": true,
 		"soShell": "vmp", "soStrength": 90, "targetSos": []string{"libnative-lib.so"},
-		"rootDetect": true, "signature": true, "antiHook": true, "resEncrypt": true,
+		"rootDetect": true, "signature": true, "sigPolicy": "block", "antiHook": true, "resEncrypt": true,
 	})
 	createReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/strategies", bytes.NewReader(createBody))
 	createReq.Header.Set("Content-Type", "application/json")
@@ -244,7 +244,7 @@ func TestStrategyCRUD_AdminSucceedsAndDeveloperCanRead(t *testing.T) {
 
 	updateBody, _ := json.Marshal(map[string]interface{}{
 		"name": "数信学院兼容策略", "description": "兼容性优先",
-		"dexLevel": "low", "soShell": "none", "soStrength": 30, "signature": true,
+		"dexLevel": "low", "soShell": "none", "soStrength": 30, "signature": true, "sigPolicy": "warn",
 	})
 	updateReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/strategies/"+strconv.Itoa(int(createPayload.Data.ID)), bytes.NewReader(updateBody))
 	updateReq.Header.Set("Content-Type", "application/json")
@@ -295,7 +295,7 @@ func TestStrategyCRUD_DuplicateAndMissingErrors(t *testing.T) {
 	defer cleanup()
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"name": "重复策略", "dexLevel": "low", "soShell": "none", "soStrength": 30,
+		"name": "重复策略", "dexLevel": "low", "soShell": "none", "soStrength": 30, "sigPolicy": "warn",
 	})
 	for i := 0; i < 2; i++ {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/strategies", bytes.NewReader(body))

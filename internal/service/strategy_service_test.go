@@ -53,7 +53,7 @@ func TestStrategyService_Templates(t *testing.T) {
 		t.Errorf("unexpected finance template: %+v", finance)
 	}
 	game, ok := tpls["game"]
-	if !ok || game.SoShell != model.SoShellAES || game.SoStrength != 70 {
+	if !ok || game.SoShell != model.SoShellVMP || game.SoStrength != 70 {
 		t.Errorf("unexpected game template: %+v", game)
 	}
 	basic, ok := tpls["basic"]
@@ -106,8 +106,9 @@ func TestStrategyService_SaveThenGetCurrent(t *testing.T) {
 	svc := service.NewStrategyService(repo, nil)
 
 	saved, err := svc.Save(service.SaveStrategyInput{
-		Frida: true, DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES,
+		Frida: true, DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP,
 		SoStrength: 70, TargetSos: []string{"libunity.so"}, RootDetect: true,
+		SigPolicy: model.SigPolicyWarn,
 	}, 42, "")
 	if err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -133,7 +134,7 @@ func TestStrategyService_GetCurrentPromotesLegacyRow(t *testing.T) {
 	svc := service.NewStrategyService(repo, nil)
 
 	legacy := &model.Strategy{
-		DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES,
+		DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP,
 		SoStrength: 70, UpdatedBy: 99,
 	}
 	if err := database.Create(legacy).Error; err != nil {
@@ -159,6 +160,7 @@ func TestStrategyService_CreateUpdateListDeleteRegularStrategy(t *testing.T) {
 		SaveStrategyInput: service.SaveStrategyInput{
 			Frida: true, DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP,
 			SoStrength: 90, TargetSos: []string{"libnative-lib.so"}, RootDetect: true,
+			SigPolicy: model.SigPolicyBlock,
 		},
 	}, 17, "")
 	if err != nil {
@@ -189,7 +191,7 @@ func TestStrategyService_CreateUpdateListDeleteRegularStrategy(t *testing.T) {
 		Description: "兼容性优先",
 		SaveStrategyInput: service.SaveStrategyInput{
 			DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30,
-			Signature: true,
+			Signature: true, SigPolicy: model.SigPolicyWarn,
 		},
 	}, 23, "")
 	if err != nil {
@@ -222,6 +224,7 @@ func TestStrategyService_RegularStrategyValidation(t *testing.T) {
 		Name: "重复策略",
 		SaveStrategyInput: service.SaveStrategyInput{
 			DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30,
+			SigPolicy: model.SigPolicyWarn,
 		},
 	}, 1, "")
 	if err != nil {
@@ -230,7 +233,8 @@ func TestStrategyService_RegularStrategyValidation(t *testing.T) {
 	_, err = svc.Create(service.StrategyPayloadInput{
 		Name: "重复策略",
 		SaveStrategyInput: service.SaveStrategyInput{
-			DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70,
+			DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP, SoStrength: 70,
+			SigPolicy: model.SigPolicyWarn,
 		},
 	}, 1, "")
 	if !errors.Is(err, service.ErrStrategyNameExists) {
@@ -244,6 +248,7 @@ func TestStrategyService_DeleteDefaultRejected(t *testing.T) {
 
 	current, err := svc.SaveCurrent(service.SaveStrategyInput{
 		DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, SoStrength: 90,
+		SigPolicy: model.SigPolicyBlock,
 	}, 1, "")
 	if err != nil {
 		t.Fatalf("SaveCurrent() error = %v", err)
@@ -261,6 +266,7 @@ func TestStrategyService_ResolveForHardening(t *testing.T) {
 
 	defaultStrategy, err := svc.SaveCurrent(service.SaveStrategyInput{
 		DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, SoStrength: 90,
+		SigPolicy: model.SigPolicyBlock,
 	}, 1, "")
 	if err != nil {
 		t.Fatalf("SaveCurrent() error = %v", err)
@@ -268,7 +274,8 @@ func TestStrategyService_ResolveForHardening(t *testing.T) {
 	regular, err := svc.Create(service.StrategyPayloadInput{
 		Name: "数信学院加固策略",
 		SaveStrategyInput: service.SaveStrategyInput{
-			DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70,
+			DexLevel: model.DexLevelMedium, SoShell: model.SoShellVMP, SoStrength: 70,
+			SigPolicy: model.SigPolicyWarn,
 		},
 	}, 2, "")
 	if err != nil {

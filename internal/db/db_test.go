@@ -160,13 +160,15 @@ func TestMigrate_HardeningTables(t *testing.T) {
 	t.Cleanup(cleanupHardeningRows)
 
 	task := model.HardeningTask{
-		TaskNo:           taskNo,
-		AppID:            app.ID,
-		Status:           model.HardeningTaskStatusQueued,
-		StrategyName:     "默认加固模板",
-		StrategySnapshot: model.Strategy{DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP},
-		VMPRulesText:     "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
-		CreatedBy:        1,
+		TaskNo:       taskNo,
+		AppID:        app.ID,
+		Status:       model.HardeningTaskStatusQueued,
+		StrategyName: "默认加固模板",
+		StrategySnapshot: model.Strategy{
+			DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP,
+			VMPRulesText: "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		},
+		CreatedBy: 1,
 	}
 	database.Unscoped().Where("task_no = ?", task.TaskNo).Delete(&model.HardeningTask{})
 	if err := database.Create(&task).Error; err != nil {
@@ -246,13 +248,15 @@ func TestDeleteHardeningRowsByTaskNo_RemovesTaskHierarchy(t *testing.T) {
 	}
 
 	task := model.HardeningTask{
-		TaskNo:           taskNo,
-		AppID:            app.ID,
-		Status:           model.HardeningTaskStatusQueued,
-		StrategyName:     "默认加固模板",
-		StrategySnapshot: model.Strategy{DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP},
-		VMPRulesText:     "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
-		CreatedBy:        1,
+		TaskNo:       taskNo,
+		AppID:        app.ID,
+		Status:       model.HardeningTaskStatusQueued,
+		StrategyName: "默认加固模板",
+		StrategySnapshot: model.Strategy{
+			DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP,
+			VMPRulesText: "# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
+		},
+		CreatedBy: 1,
 	}
 	if err := database.Create(&task).Error; err != nil {
 		t.Fatalf("create hardening task: %v", err)
