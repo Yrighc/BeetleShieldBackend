@@ -158,7 +158,7 @@ func (s *AppService) Upload(ctx context.Context, input UploadInput) (*model.App,
 		return nil, fmt.Errorf("save app record: %w", err)
 	}
 
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: input.UploadedBy,
 		Action:      model.AuditActionAppUpload,
 		TargetType:  "app",
@@ -202,7 +202,7 @@ func (s *AppService) Delete(ctx context.Context, id uint, actorUserID uint, ip s
 		return fmt.Errorf("delete app record: %w", err)
 	}
 	_ = s.storage.DeleteObject(ctx, app.ObjectKey)
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: actorUserID,
 		Action:      model.AuditActionAppDelete,
 		TargetType:  "app",
@@ -223,7 +223,7 @@ func (s *AppService) DownloadURL(ctx context.Context, id uint, actorUserID uint,
 	if err != nil {
 		return "", err
 	}
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: actorUserID,
 		Action:      model.AuditActionAppDownload,
 		TargetType:  "app",
@@ -235,8 +235,3 @@ func (s *AppService) DownloadURL(ctx context.Context, id uint, actorUserID uint,
 	return downloadURL, nil
 }
 
-func (s *AppService) recordAudit(input RecordAuditInput) {
-	if s.auditService != nil {
-		s.auditService.Record(input)
-	}
-}

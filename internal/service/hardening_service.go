@@ -117,7 +117,7 @@ func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTask
 		return nil, err
 	}
 
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: input.CreatedBy,
 		Action:      model.AuditActionHardeningCreate,
 		TargetType:  "hardening_task",
@@ -208,7 +208,7 @@ func (s *HardeningService) DownloadURL(ctx context.Context, taskID uint, artifac
 	if artifactLabel == "" {
 		artifactLabel = "unsigned"
 	}
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: actorUserID,
 		Action:      model.AuditActionHardeningDownload,
 		TargetType:  "hardening_task",
@@ -224,8 +224,3 @@ func generateHardeningTaskNo(now time.Time) string {
 	return fmt.Sprintf("TASK-%s-%d", now.Format("20060102"), now.UnixNano())
 }
 
-func (s *HardeningService) recordAudit(input RecordAuditInput) {
-	if s.auditService != nil {
-		s.auditService.Record(input)
-	}
-}

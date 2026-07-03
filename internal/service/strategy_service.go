@@ -115,7 +115,7 @@ func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint, ip strin
 	if err := s.strategyRepo.Save(strategy); err != nil {
 		return nil, err
 	}
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: updatedBy,
 		Action:      model.AuditActionStrategySave,
 		TargetType:  "strategy",
@@ -127,8 +127,3 @@ func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint, ip strin
 	return strategy, nil
 }
 
-func (s *StrategyService) recordAudit(input RecordAuditInput) {
-	if s.auditService != nil {
-		s.auditService.Record(input)
-	}
-}

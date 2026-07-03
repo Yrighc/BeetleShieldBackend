@@ -56,7 +56,7 @@ func (s *AuthService) Login(email, password, ip string) (string, *model.User, er
 	// 更新用户最后登录时间，忽略可能的错误
 	_ = s.userRepo.UpdateLastLogin(user.ID)
 
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: user.ID,
 		ActorEmail:  user.Email,
 		Action:      model.AuditActionLoginSuccess,
@@ -73,7 +73,7 @@ func (s *AuthService) GetUserByID(id uint) (*model.User, error) {
 }
 
 func (s *AuthService) recordLoginFailure(email, ip string) {
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorEmail: email,
 		Action:     model.AuditActionLoginFailure,
 		IP:         ip,
@@ -81,8 +81,3 @@ func (s *AuthService) recordLoginFailure(email, ip string) {
 	})
 }
 
-func (s *AuthService) recordAudit(input RecordAuditInput) {
-	if s.auditService != nil {
-		s.auditService.Record(input)
-	}
-}

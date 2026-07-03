@@ -64,7 +64,7 @@ func (s *UserService) Create(input CreateUserInput) (*model.User, error) {
 	if err := s.userRepo.Create(user); err != nil {
 		return nil, err
 	}
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: input.ActorUserID,
 		Action:      model.AuditActionUserCreate,
 		TargetType:  "user",
@@ -98,7 +98,7 @@ func (s *UserService) Update(id uint, input UpdateUserInput, actorUserID uint, i
 		}
 	}
 
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: actorUserID,
 		Action:      model.AuditActionUserUpdate,
 		TargetType:  "user",
@@ -126,7 +126,7 @@ func (s *UserService) UpdateStatus(id uint, status model.UserStatus, currentUser
 	if status == model.UserStatusDisabled {
 		statusLabel = "禁用"
 	}
-	s.recordAudit(RecordAuditInput{
+	s.auditService.Record(RecordAuditInput{
 		ActorUserID: currentUserID,
 		Action:      model.AuditActionUserStatusChange,
 		TargetType:  "user",
@@ -138,8 +138,3 @@ func (s *UserService) UpdateStatus(id uint, status model.UserStatus, currentUser
 	return nil
 }
 
-func (s *UserService) recordAudit(input RecordAuditInput) {
-	if s.auditService != nil {
-		s.auditService.Record(input)
-	}
-}
