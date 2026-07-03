@@ -165,9 +165,8 @@ func ResolveRiskLevel(strategy model.Strategy) model.RiskLevel {
 // BuildHardeningReport is a pure function: given a completed task's frozen
 // StrategySnapshot and artifact fields, it deterministically derives a risk
 // report. It never touches the database and never mutates App.RiskLevel —
-// persisting a risk level onto the App row is deferred to the Dashboard
-// sub-project, which is the first consumer that actually needs to query
-// apps by risk level.
+// that persistence happens separately, via ResolveRiskLevel, when the
+// worker marks a task completed (see HardeningRepository.CompleteTaskForApp).
 func BuildHardeningReport(task model.HardeningTask, engineVersion string) HardeningReport {
 	flags := ResolveEffectiveFlags(task.StrategySnapshot)
 	b := computeScoreBreakdown(flags, task.StrategySnapshot.DexLevel)
