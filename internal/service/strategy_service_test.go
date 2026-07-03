@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -121,6 +122,186 @@ func TestStrategyService_SaveThenGetCurrent(t *testing.T) {
 	}
 	if current.DexLevel != model.DexLevelMedium || current.SoStrength != 70 {
 		t.Errorf("GetCurrent() after Save() returned unexpected values: %+v", current)
+	}
+	if !current.IsDefault || current.Name != "默认加固策略" {
+		t.Errorf("current metadata = %+v", current)
+	}
+}
+
+func TestStrategyService_GetCurrentPromotesLegacyRow(t *testing.T) {
+	repo, database := setupTestStrategyRepoWithDB(t)
+	svc := service.NewStrategyService(repo, nil)
+
+	legacy := &model.Strategy{
+		DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES,
+		SoStrength: 70, UpdatedBy: 99,
+	}
+	if err := database.Create(legacy).Error; err != nil {
+		t.Fatalf("create legacy strategy: %v", err)
+	}
+
+	current, err := svc.GetCurrent()
+	if err != nil {
+		t.Fatalf("GetCurrent() error = %v", err)
+	}
+	if current.ID != legacy.ID || !current.IsDefault || current.Name != "默认加固策略" {
+		t.Fatalf("current = %+v, want promoted legacy row", current)
+	}
+}
+
+func TestStrategyService_CreateUpdateListDeleteRegularStrategy(t *testing.T) {
+	repo := setupTestStrategyRepo(t)
+	svc := service.NewStrategyService(repo, nil)
+
+	created, err := svc.Create(service.StrategyPayloadInput{
+		Name:        "数信学院加固策略",
+		Description: "高强度配置",
+		SaveStrategyInput: service.SaveStrategyInput{
+			Frida: true, DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP,
+			SoStrength: 90, TargetSos: []string{"libnative-lib.so"}, RootDetect: true,
+		},
+	}, 17, "")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.ID == 0 || created.IsDefault || created.CreatedBy != 17 || created.UpdatedBy != 17 {
+		t.Fatalf("created = %+v", created)
+	}
+
+	items, total, err := svc.List(repository.StrategyListFilter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].Name != "数信学院加固策略" {
+		t.Fatalf("List() = %+v total=%d", items, total)
+	}
+
+	found, err := svc.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if found.ID != created.ID {
+		t.Fatalf("Get() ID = %d, want %d", found.ID, created.ID)
+	}
+
+	updated, err := svc.Update(created.ID, service.StrategyPayloadInput{
+		Name:        "数信学院兼容策略",
+		Description: "兼容性优先",
+		SaveStrategyInput: service.SaveStrategyInput{
+			DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30,
+			Signature: true,
+		},
+	}, 23, "")
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.Name != "数信学院兼容策略" || updated.UpdatedBy != 23 || updated.DexLevel != model.DexLevelLow {
+		t.Fatalf("updated = %+v", updated)
+	}
+
+	if err := svc.Delete(created.ID, 23, ""); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := svc.Get(created.ID); !errors.Is(err, service.ErrStrategyNotFound) {
+		t.Fatalf("Get(deleted) err = %v, want ErrStrategyNotFound", err)
+	}
+}
+
+func TestStrategyService_RegularStrategyValidation(t *testing.T) {
+	repo := setupTestStrategyRepo(t)
+	svc := service.NewStrategyService(repo, nil)
+
+	_, err := svc.Create(service.StrategyPayloadInput{
+		SaveStrategyInput: service.SaveStrategyInput{DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30},
+	}, 1, "")
+	if !errors.Is(err, service.ErrStrategyNameRequired) {
+		t.Fatalf("Create(empty name) err = %v, want ErrStrategyNameRequired", err)
+	}
+
+	_, err = svc.Create(service.StrategyPayloadInput{
+		Name: "重复策略",
+		SaveStrategyInput: service.SaveStrategyInput{
+			DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30,
+		},
+	}, 1, "")
+	if err != nil {
+		t.Fatalf("Create(first) error = %v", err)
+	}
+	_, err = svc.Create(service.StrategyPayloadInput{
+		Name: "重复策略",
+		SaveStrategyInput: service.SaveStrategyInput{
+			DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70,
+		},
+	}, 1, "")
+	if !errors.Is(err, service.ErrStrategyNameExists) {
+		t.Fatalf("Create(duplicate) err = %v, want ErrStrategyNameExists", err)
+	}
+}
+
+func TestStrategyService_DeleteDefaultRejected(t *testing.T) {
+	repo := setupTestStrategyRepo(t)
+	svc := service.NewStrategyService(repo, nil)
+
+	current, err := svc.SaveCurrent(service.SaveStrategyInput{
+		DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, SoStrength: 90,
+	}, 1, "")
+	if err != nil {
+		t.Fatalf("SaveCurrent() error = %v", err)
+	}
+
+	err = svc.Delete(current.ID, 1, "")
+	if !errors.Is(err, service.ErrDefaultStrategyDelete) {
+		t.Fatalf("Delete(default) err = %v, want ErrDefaultStrategyDelete", err)
+	}
+}
+
+func TestStrategyService_ResolveForHardening(t *testing.T) {
+	repo := setupTestStrategyRepo(t)
+	svc := service.NewStrategyService(repo, nil)
+
+	defaultStrategy, err := svc.SaveCurrent(service.SaveStrategyInput{
+		DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, SoStrength: 90,
+	}, 1, "")
+	if err != nil {
+		t.Fatalf("SaveCurrent() error = %v", err)
+	}
+	regular, err := svc.Create(service.StrategyPayloadInput{
+		Name: "数信学院加固策略",
+		SaveStrategyInput: service.SaveStrategyInput{
+			DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70,
+		},
+	}, 2, "")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	resolved, name, err := svc.ResolveForHardening(0)
+	if err != nil {
+		t.Fatalf("ResolveForHardening(0) error = %v", err)
+	}
+	if resolved.ID != defaultStrategy.ID || name != "默认加固策略" {
+		t.Fatalf("ResolveForHardening(0) = %+v %q", resolved, name)
+	}
+
+	resolved, name, err = svc.ResolveForHardening(regular.ID)
+	if err != nil {
+		t.Fatalf("ResolveForHardening(regular) error = %v", err)
+	}
+	if resolved.ID != regular.ID || name != regular.Name || resolved.DexLevel != model.DexLevelMedium {
+		t.Fatalf("ResolveForHardening(regular) = %+v %q", resolved, name)
+	}
+
+	resolved, name, err = svc.ResolveForHardening(defaultStrategy.ID)
+	if err != nil {
+		t.Fatalf("ResolveForHardening(default ID) error = %v", err)
+	}
+	if resolved.ID != defaultStrategy.ID || name != "默认加固策略" {
+		t.Fatalf("ResolveForHardening(default ID) = %+v %q", resolved, name)
+	}
+
+	_, _, err = svc.ResolveForHardening(99999999)
+	if !errors.Is(err, service.ErrStrategyNotFound) {
+		t.Fatalf("ResolveForHardening(missing) err = %v, want ErrStrategyNotFound", err)
 	}
 }
 

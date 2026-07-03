@@ -11,7 +11,7 @@ import (
 	"beetleshield-backend/internal/model"
 )
 
-const DefaultStrategyName = "默认加固模板"
+const DefaultStrategyName = "默认加固策略"
 
 // EffectiveFlags captures which dpt.jar engine flags a Strategy actually
 // turns on. This is deliberately narrower than the Strategy struct itself:

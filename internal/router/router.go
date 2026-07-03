@@ -65,6 +65,11 @@ func New(deps Deps) *gin.Engine {
 			strategies.GET("/templates", deps.StrategyHandler.Templates)
 			strategies.GET("/current", deps.StrategyHandler.GetCurrent)
 			strategies.PUT("/current", middleware.RequireRole(model.RoleAdmin), deps.StrategyHandler.SaveCurrent)
+			strategies.GET("", deps.StrategyHandler.List)
+			strategies.POST("", middleware.RequireRole(model.RoleAdmin), deps.StrategyHandler.Create)
+			strategies.GET("/:id", deps.StrategyHandler.Get)
+			strategies.PUT("/:id", middleware.RequireRole(model.RoleAdmin), deps.StrategyHandler.Update)
+			strategies.DELETE("/:id", middleware.RequireRole(model.RoleAdmin), deps.StrategyHandler.Delete)
 		}
 
 		hardeningTasks := v1.Group("/hardening-tasks")

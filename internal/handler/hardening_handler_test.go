@@ -81,6 +81,7 @@ func cleanupHardeningHandlerTestData(t *testing.T, database *gorm.DB, scope hard
 		)
 	`, scope.packageNamePrefix()+".%")
 	database.Unscoped().Where("package_name LIKE ?", scope.packageNamePrefix()+".%").Delete(&model.App{})
+	database.Unscoped().Where("updated_by = ? OR created_by = ?", uint(515151), uint(515151)).Delete(&model.Strategy{})
 	database.Exec(`
 		DELETE FROM audit_logs
 		WHERE actor_user_id IN (
@@ -94,7 +95,7 @@ func cleanupHardeningHandlerTestData(t *testing.T, database *gorm.DB, scope hard
 	}).Delete(&model.User{})
 }
 
-func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, string, uint, *repository.HardeningRepository, *repository.AuditRepository, func()) {
+func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, string, uint, *repository.HardeningRepository, *repository.AuditRepository, *repository.StrategyRepository, func()) {
 	t.Helper()
 	scope := newHardeningHandlerTestScope()
 
@@ -185,7 +186,8 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		t.Fatalf("create app: %v", err)
 	}
 
-	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), auditService)
+	strategyRepo := repository.NewStrategyRepository(database)
+	strategySvc := service.NewStrategyService(strategyRepo, auditService)
 	hardeningRepo := repository.NewHardeningRepository(database)
 	hardeningSvc := service.NewHardeningService(
 		hardeningRepo,
@@ -210,11 +212,11 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		srv.Close()
 		cleanupHardeningHandlerTestData(t, database, scope)
 	}
-	return srv, adminToken, developerToken, auditorToken, app.ID, hardeningRepo, auditRepo, cleanup
+	return srv, adminToken, developerToken, auditorToken, app.ID, hardeningRepo, auditRepo, strategyRepo, cleanup
 }
 
 func TestHardeningHandler_CreateAllowsDeveloperAndRejectsAuditor(t *testing.T) {
-	srv, _, developerToken, auditorToken, appID, _, auditRepo, cleanup := setupHardeningRouter(t)
+	srv, _, developerToken, auditorToken, appID, _, auditRepo, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, err := json.Marshal(map[string]interface{}{
@@ -274,8 +276,79 @@ func TestHardeningHandler_CreateAllowsDeveloperAndRejectsAuditor(t *testing.T) {
 	}
 }
 
+func TestHardeningHandler_CreateUsesStrategyID(t *testing.T) {
+	srv, _, developerToken, _, appID, _, _, strategyRepo, cleanup := setupHardeningRouter(t)
+	defer cleanup()
+
+	strategy := &model.Strategy{
+		Name: "数信学院加固策略", DexLevel: model.DexLevelMedium,
+		SoShell: model.SoShellAES, SoStrength: 70,
+		RootDetect: true, Signature: true,
+		CreatedBy: 515151, UpdatedBy: 515151,
+	}
+	if err := strategyRepo.Create(strategy); err != nil {
+		t.Fatalf("create strategy: %v", err)
+	}
+
+	body, err := json.Marshal(map[string]interface{}{
+		"appId": appID, "strategyId": strategy.ID,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/hardening-tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+developerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var created struct {
+		Data service.HardeningTaskDetail `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Data.Task.StrategyName != "数信学院加固策略" {
+		t.Fatalf("strategy name = %q", created.Data.Task.StrategyName)
+	}
+	if created.Data.Task.StrategySnapshot.DexLevel != model.DexLevelMedium || !created.Data.Task.StrategySnapshot.RootDetect {
+		t.Fatalf("strategy snapshot = %+v", created.Data.Task.StrategySnapshot)
+	}
+}
+
+func TestHardeningHandler_CreateReturnsNotFoundForMissingStrategyID(t *testing.T) {
+	srv, _, developerToken, _, appID, _, _, _, cleanup := setupHardeningRouter(t)
+	defer cleanup()
+
+	body, err := json.Marshal(map[string]interface{}{
+		"appId": appID, "strategyId": 99999999,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/hardening-tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+developerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
 func TestHardeningHandler_CreateReturnsConflictForDuplicateActiveTask(t *testing.T) {
-	srv, _, developerToken, _, appID, _, _, cleanup := setupHardeningRouter(t)
+	srv, _, developerToken, _, appID, _, _, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, err := json.Marshal(map[string]interface{}{"appId": appID})
@@ -304,7 +377,7 @@ func TestHardeningHandler_CreateReturnsConflictForDuplicateActiveTask(t *testing
 }
 
 func TestHardeningHandler_ReadRoutesAllowAuditor(t *testing.T) {
-	srv, adminToken, _, auditorToken, appID, repo, _, cleanup := setupHardeningRouter(t)
+	srv, adminToken, _, auditorToken, appID, repo, _, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, err := json.Marshal(map[string]interface{}{"appId": appID})
@@ -378,7 +451,7 @@ func TestHardeningHandler_ReadRoutesAllowAuditor(t *testing.T) {
 }
 
 func TestHardeningHandler_GetReportRequiresCompletedTask(t *testing.T) {
-	srv, _, developerToken, _, appID, _, _, cleanup := setupHardeningRouter(t)
+	srv, _, developerToken, _, appID, _, _, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, _ := json.Marshal(map[string]interface{}{"appId": appID})
@@ -410,7 +483,7 @@ func TestHardeningHandler_GetReportRequiresCompletedTask(t *testing.T) {
 }
 
 func TestHardeningHandler_GetReportUnknownTask(t *testing.T) {
-	srv, _, developerToken, _, _, _, _, cleanup := setupHardeningRouter(t)
+	srv, _, developerToken, _, _, _, _, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/hardening-tasks/999999999/report", nil)
@@ -426,7 +499,7 @@ func TestHardeningHandler_GetReportUnknownTask(t *testing.T) {
 }
 
 func TestHardeningHandler_GetReportOnCompletedTaskAllowsAuditor(t *testing.T) {
-	srv, _, developerToken, auditorToken, appID, hardeningRepo, _, cleanup := setupHardeningRouter(t)
+	srv, _, developerToken, auditorToken, appID, hardeningRepo, _, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, _ := json.Marshal(map[string]interface{}{"appId": appID})
@@ -487,7 +560,7 @@ func TestHardeningHandler_GetReportOnCompletedTaskAllowsAuditor(t *testing.T) {
 // permission matrix for "下载加固交付包") rather than being open to every
 // authenticated role like the other read-only hardening endpoints.
 func TestHardeningHandler_DownloadURLRequiresAdminOrDeveloperRole(t *testing.T) {
-	srv, adminToken, developerToken, auditorToken, appID, repo, auditRepo, cleanup := setupHardeningRouter(t)
+	srv, adminToken, developerToken, auditorToken, appID, repo, auditRepo, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, err := json.Marshal(map[string]interface{}{"appId": appID})
@@ -582,7 +655,7 @@ func TestHardeningHandler_DownloadURLRequiresAdminOrDeveloperRole(t *testing.T) 
 }
 
 func TestHardeningHandler_GetOverviewReturnsAggregatedData(t *testing.T) {
-	srv, _, developerToken, _, appID, _, _, cleanup := setupHardeningRouter(t)
+	srv, _, developerToken, _, appID, _, _, _, cleanup := setupHardeningRouter(t)
 	defer cleanup()
 
 	body, _ := json.Marshal(map[string]interface{}{"appId": appID})

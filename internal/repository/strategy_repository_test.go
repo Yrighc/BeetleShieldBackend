@@ -42,17 +42,21 @@ func TestStrategyRepository_SaveAndGetCurrent(t *testing.T) {
 	repo := setupStrategyRepo(t)
 
 	strategy := &model.Strategy{
+		Name: "默认加固策略", IsDefault: true,
 		Frida: true, DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP,
 		SoStrength: 90, TargetSos: []string{"libnative-lib.so", "libsec.so"},
 		RootDetect: true, UpdatedBy: 1,
 	}
-	if err := repo.Save(strategy); err != nil {
-		t.Fatalf("Save() error = %v", err)
+	if err := repo.SaveCurrent(strategy); err != nil {
+		t.Fatalf("SaveCurrent() error = %v", err)
 	}
 
 	current, err := repo.GetCurrent()
 	if err != nil {
 		t.Fatalf("GetCurrent() error = %v", err)
+	}
+	if !current.IsDefault || current.Name != "默认加固策略" {
+		t.Errorf("current metadata = name %q isDefault %v", current.Name, current.IsDefault)
 	}
 	if current.DexLevel != model.DexLevelHigh || current.SoStrength != 90 {
 		t.Errorf("unexpected saved strategy: %+v", current)
@@ -62,11 +66,12 @@ func TestStrategyRepository_SaveAndGetCurrent(t *testing.T) {
 	}
 
 	strategy2 := &model.Strategy{
+		Name: "默认加固策略", IsDefault: true,
 		Frida: false, DexLevel: model.DexLevelLow, SoShell: model.SoShellNone,
 		SoStrength: 0, TargetSos: []string{}, RootDetect: false, UpdatedBy: 2,
 	}
-	if err := repo.Save(strategy2); err != nil {
-		t.Fatalf("second Save() error = %v", err)
+	if err := repo.SaveCurrent(strategy2); err != nil {
+		t.Fatalf("second SaveCurrent() error = %v", err)
 	}
 
 	updated, err := repo.GetCurrent()
@@ -81,5 +86,136 @@ func TestStrategyRepository_SaveAndGetCurrent(t *testing.T) {
 	repo.db.Model(&model.Strategy{}).Count(&count)
 	if count != 1 {
 		t.Errorf("expected exactly 1 strategy row after two saves, got %d", count)
+	}
+}
+
+func TestStrategyRepository_ListOnlyRegularStrategies(t *testing.T) {
+	repo := setupStrategyRepo(t)
+
+	if err := repo.SaveCurrent(&model.Strategy{
+		Name: "默认加固策略", IsDefault: true,
+		DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, SoStrength: 90,
+	}); err != nil {
+		t.Fatalf("SaveCurrent() error = %v", err)
+	}
+	regular := &model.Strategy{
+		Name: "数信学院加固策略", Description: "高强度配置",
+		DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70,
+	}
+	if err := repo.Create(regular); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	items, total, err := repo.List(StrategyListFilter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("List() total=%d len=%d, want one regular strategy", total, len(items))
+	}
+	if items[0].Name != "数信学院加固策略" || items[0].IsDefault {
+		t.Fatalf("List() item = %+v", items[0])
+	}
+
+	filtered, filteredTotal, err := repo.List(StrategyListFilter{Search: "数信", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("filtered List() error = %v", err)
+	}
+	if filteredTotal != 1 || len(filtered) != 1 || filtered[0].ID != regular.ID {
+		t.Fatalf("filtered List() = %+v total=%d, want regular strategy", filtered, filteredTotal)
+	}
+}
+
+func TestStrategyRepository_NameExistsExcludesCurrentID(t *testing.T) {
+	repo := setupStrategyRepo(t)
+
+	first := &model.Strategy{Name: "数信学院加固策略", DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES, SoStrength: 70}
+	if err := repo.Create(first); err != nil {
+		t.Fatalf("Create(first) error = %v", err)
+	}
+	second := &model.Strategy{Name: "金融高强度策略", DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, SoStrength: 90}
+	if err := repo.Create(second); err != nil {
+		t.Fatalf("Create(second) error = %v", err)
+	}
+
+	exists, err := repo.NameExists(first.Name, 0)
+	if err != nil {
+		t.Fatalf("NameExists() error = %v", err)
+	}
+	if !exists {
+		t.Fatal("NameExists() = false, want true")
+	}
+
+	exists, err = repo.NameExists(first.Name, first.ID)
+	if err != nil {
+		t.Fatalf("NameExists(exclude same) error = %v", err)
+	}
+	if exists {
+		t.Fatal("NameExists() with excluded same ID = true, want false")
+	}
+
+	exists, err = repo.NameExists(first.Name, second.ID)
+	if err != nil {
+		t.Fatalf("NameExists(exclude other) error = %v", err)
+	}
+	if !exists {
+		t.Fatal("NameExists() with excluded other ID = false, want true")
+	}
+}
+
+func TestStrategyRepository_FindRegularAndDelete(t *testing.T) {
+	repo := setupStrategyRepo(t)
+
+	if err := repo.SaveCurrent(&model.Strategy{
+		Name: "默认加固策略", IsDefault: true,
+		DexLevel: model.DexLevelHigh, SoShell: model.SoShellVMP, SoStrength: 90,
+	}); err != nil {
+		t.Fatalf("SaveCurrent() error = %v", err)
+	}
+	current, err := repo.GetCurrent()
+	if err != nil {
+		t.Fatalf("GetCurrent() error = %v", err)
+	}
+	if _, err := repo.FindRegularByID(current.ID); err == nil {
+		t.Fatal("FindRegularByID(default) error = nil, want not found")
+	}
+
+	regular := &model.Strategy{Name: "基础兼容策略", DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30}
+	if err := repo.Create(regular); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	found, err := repo.FindRegularByID(regular.ID)
+	if err != nil {
+		t.Fatalf("FindRegularByID(regular) error = %v", err)
+	}
+	if found.Name != regular.Name {
+		t.Fatalf("FindRegularByID() name = %q, want %q", found.Name, regular.Name)
+	}
+
+	if err := repo.Delete(regular.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := repo.FindByID(regular.ID); err == nil {
+		t.Fatal("FindByID(deleted) error = nil, want not found")
+	}
+}
+
+func TestStrategyRepository_PromoteLegacyCurrent(t *testing.T) {
+	repo := setupStrategyRepo(t)
+
+	legacy := &model.Strategy{
+		DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES,
+		SoStrength: 70, UpdatedBy: 9,
+	}
+	if err := repo.db.Create(legacy).Error; err != nil {
+		t.Fatalf("create legacy strategy: %v", err)
+	}
+
+	promoted, err := repo.PromoteLegacyCurrent()
+	if err != nil {
+		t.Fatalf("PromoteLegacyCurrent() error = %v", err)
+	}
+	if promoted.ID != legacy.ID || !promoted.IsDefault || promoted.Name != "默认加固策略" {
+		t.Fatalf("promoted = %+v", promoted)
 	}
 }

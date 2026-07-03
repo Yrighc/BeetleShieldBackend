@@ -19,6 +19,7 @@ var (
 	ErrHardeningArtifactNotFound = errors.New("hardening artifact not found")
 	ErrInvalidHardeningArtifact  = errors.New("invalid hardening artifact")
 	ErrHardeningReportNotReady   = errors.New("hardening task not completed, report not available")
+	ErrHardeningStrategyNotFound = errors.New("hardening strategy not found")
 )
 
 type DownloadURLProvider interface {
@@ -27,6 +28,7 @@ type DownloadURLProvider interface {
 
 type CreateHardeningTaskInput struct {
 	AppID                    uint
+	StrategyID               uint
 	StrategyName             string
 	StrategySnapshot         *model.Strategy
 	VMPRulesText             string
@@ -97,17 +99,28 @@ func (s *HardeningService) Create(ctx context.Context, input CreateHardeningTask
 	}
 
 	strategy := model.Strategy{}
-	if input.StrategySnapshot != nil {
+	strategyName := input.StrategyName
+	if input.StrategyID > 0 {
+		resolved, resolvedName, err := s.strategyService.ResolveForHardening(input.StrategyID)
+		if err != nil {
+			if errors.Is(err, ErrStrategyNotFound) {
+				return nil, ErrHardeningStrategyNotFound
+			}
+			return nil, err
+		}
+		strategy = *resolved
+		strategyName = resolvedName
+	} else if input.StrategySnapshot != nil {
 		strategy = *input.StrategySnapshot
 	} else {
-		current, err := s.strategyService.GetCurrent()
+		current, currentName, err := s.strategyService.ResolveForHardening(0)
 		if err != nil {
 			return nil, err
 		}
 		strategy = *current
+		strategyName = currentName
 	}
 
-	strategyName := input.StrategyName
 	if strategyName == "" {
 		strategyName = DefaultStrategyName
 	}

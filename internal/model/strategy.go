@@ -21,6 +21,9 @@ const (
 
 type Strategy struct {
 	ID            uint                `gorm:"primaryKey" json:"id"`
+	Name          string              `gorm:"size:120;not null;default:'';index" json:"name"`
+	Description   string              `gorm:"size:500" json:"description"`
+	IsDefault     bool                `gorm:"not null;default:false;index" json:"isDefault"`
 	Frida         bool                `json:"frida"`
 	Xposed        bool                `json:"xposed"`
 	Debugger      bool                `json:"debugger"`
@@ -35,6 +38,7 @@ type Strategy struct {
 	Signature     bool                `json:"signature"`
 	AntiHook      bool                `json:"antiHook"`
 	ResEncrypt    bool                `json:"resEncrypt"`
+	CreatedBy     uint                `json:"createdBy"`
 	UpdatedBy     uint                `json:"updatedBy"`
 	CreatedAt     time.Time           `json:"createdAt"`
 	UpdatedAt     time.Time           `json:"updatedAt"`

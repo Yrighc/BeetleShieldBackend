@@ -25,6 +25,7 @@ func NewHardeningHandler(svc *service.HardeningService, dashboardSvc *service.Da
 
 type createHardeningTaskRequest struct {
 	AppID                    uint            `json:"appId" binding:"required"`
+	StrategyID               uint            `json:"strategyId"`
 	StrategyName             string          `json:"strategyName"`
 	StrategySnapshot         *model.Strategy `json:"strategySnapshot"`
 	VMPRulesText             string          `json:"vmpRulesText"`
@@ -41,6 +42,7 @@ func (h *HardeningHandler) Create(c *gin.Context) {
 
 	detail, err := h.svc.Create(c.Request.Context(), service.CreateHardeningTaskInput{
 		AppID:                    req.AppID,
+		StrategyID:               req.StrategyID,
 		StrategyName:             req.StrategyName,
 		StrategySnapshot:         req.StrategySnapshot,
 		VMPRulesText:             req.VMPRulesText,
@@ -55,6 +57,8 @@ func (h *HardeningHandler) Create(c *gin.Context) {
 			response.Error(c, http.StatusNotFound, 40402, "应用不存在")
 		case errors.Is(err, service.ErrHardeningActiveTaskExists):
 			response.Error(c, http.StatusConflict, 40910, "应用已有进行中的加固任务")
+		case errors.Is(err, service.ErrHardeningStrategyNotFound):
+			response.Error(c, http.StatusNotFound, 40412, "加固策略不存在")
 		default:
 			response.Error(c, http.StatusInternalServerError, 50020, "创建加固任务失败")
 		}

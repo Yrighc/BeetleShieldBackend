@@ -48,6 +48,24 @@ func TestRequestLog_CapturesMethodAndStatus(t *testing.T) {
 	}
 }
 
+func TestRequestLog_NilRecorderIsNoop(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	r.Use(RequestLog(nil))
+	r.GET("/dummy", func(c *gin.Context) {
+		c.JSON(http.StatusAccepted, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/dummy", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusAccepted)
+	}
+}
+
 // TestRequestLog_SeesActorUserIDSetByInnerMiddleware proves that RequestLog's
 // post-c.Next() recording code runs *after* any auth middleware registered
 // further down the chain has already set ContextUserIDKey — this is the

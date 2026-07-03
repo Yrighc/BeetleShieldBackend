@@ -77,7 +77,7 @@ func cleanupHardeningServiceTestData(t *testing.T, database *gorm.DB, scope hard
 		)
 	`, scope.packageNamePrefix()+".%")
 	database.Unscoped().Where("package_name LIKE ?", scope.packageNamePrefix()+".%").Delete(&model.App{})
-	database.Unscoped().Where("updated_by = ?", uint(515151)).Delete(&model.Strategy{})
+	database.Unscoped().Where("updated_by = ? OR created_by = ?", uint(515151), uint(515151)).Delete(&model.Strategy{})
 }
 
 func setupHardeningServiceTest(t *testing.T) (*service.HardeningService, *repository.AppRepository, *repository.HardeningRepository, hardeningServiceTestScope) {
@@ -262,6 +262,80 @@ func TestHardeningService_CreateUsesCustomSnapshotAndRules(t *testing.T) {
 	}
 	if !detail.Task.EnableFileIntegrityCheck || !detail.Task.EnableProxyDetect {
 		t.Fatalf("advanced flags not preserved: %+v", detail.Task)
+	}
+}
+
+func TestHardeningService_CreateUsesStrategyID(t *testing.T) {
+	svc, appRepo, _, _, scope, database := setupHardeningServiceTestWithAuditAndDB(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "strategy-id")
+	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), nil)
+	strategy, err := strategySvc.Create(service.StrategyPayloadInput{
+		Name: "数信学院加固策略",
+		SaveStrategyInput: service.SaveStrategyInput{
+			DexLevel: model.DexLevelMedium, SoShell: model.SoShellAES,
+			SoStrength: 70, RootDetect: true, Signature: true,
+		},
+	}, 515151, "")
+	if err != nil {
+		t.Fatalf("Create strategy error = %v", err)
+	}
+
+	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{
+		AppID:      app.ID,
+		StrategyID: strategy.ID,
+		StrategySnapshot: &model.Strategy{
+			DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30,
+		},
+		CreatedBy: 7,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if detail.Task.StrategyName != "数信学院加固策略" {
+		t.Fatalf("strategy name = %q", detail.Task.StrategyName)
+	}
+	if detail.Task.StrategySnapshot.DexLevel != model.DexLevelMedium || !detail.Task.StrategySnapshot.RootDetect {
+		t.Fatalf("strategy snapshot = %+v", detail.Task.StrategySnapshot)
+	}
+}
+
+func TestHardeningService_CreateUsesDefaultStrategyWhenStrategyIDMissing(t *testing.T) {
+	svc, appRepo, _, _, scope, database := setupHardeningServiceTestWithAuditAndDB(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "default-strategy")
+	strategySvc := service.NewStrategyService(repository.NewStrategyRepository(database), nil)
+	if _, err := strategySvc.SaveCurrent(service.SaveStrategyInput{
+		DexLevel: model.DexLevelLow, SoShell: model.SoShellNone, SoStrength: 30,
+		Signature: true,
+	}, 515151, ""); err != nil {
+		t.Fatalf("SaveCurrent() error = %v", err)
+	}
+
+	detail, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{
+		AppID:     app.ID,
+		CreatedBy: 7,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if detail.Task.StrategyName != service.DefaultStrategyName {
+		t.Fatalf("strategy name = %q", detail.Task.StrategyName)
+	}
+	if detail.Task.StrategySnapshot.DexLevel != model.DexLevelLow || !detail.Task.StrategySnapshot.Signature {
+		t.Fatalf("strategy snapshot = %+v", detail.Task.StrategySnapshot)
+	}
+}
+
+func TestHardeningService_CreateRejectsMissingStrategyID(t *testing.T) {
+	svc, appRepo, _, _, scope, _ := setupHardeningServiceTestWithAuditAndDB(t)
+	app := createHardeningServiceApp(t, appRepo, scope, "missing-strategy")
+
+	_, err := svc.Create(context.Background(), service.CreateHardeningTaskInput{
+		AppID:      app.ID,
+		StrategyID: 99999999,
+		CreatedBy:  7,
+	})
+	if err != service.ErrHardeningStrategyNotFound {
+		t.Fatalf("Create() err = %v, want ErrHardeningStrategyNotFound", err)
 	}
 }
 

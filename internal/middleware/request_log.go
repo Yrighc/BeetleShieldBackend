@@ -41,6 +41,10 @@ func RequestLog(recorder RequestLogRecorder) gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 
+		if recorder == nil {
+			return
+		}
+
 		recorder.Record(RequestLogEntry{
 			Method:      c.Request.Method,
 			Path:        c.FullPath(),
