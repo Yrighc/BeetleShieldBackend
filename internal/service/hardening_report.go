@@ -42,17 +42,17 @@ type ReportArtifact struct {
 }
 
 type HardeningReport struct {
-	TaskID      uint                   `json:"taskId"`
-	TaskNo      string                 `json:"taskNo"`
-	AppName     string                 `json:"appName"`
-	PackageName string                 `json:"packageName"`
-	Version     string                 `json:"version"`
-	BeforeScore int                    `json:"beforeScore"`
-	AfterScore  int                    `json:"afterScore"`
-	RiskLevel   model.RiskLevel        `json:"riskLevel"`
-	Dimensions  []ReportDimension      `json:"dimensions"`
-	Checklist   []ReportChecklistItem  `json:"checklist"`
-	Artifact    ReportArtifact         `json:"artifact"`
+	TaskID      uint                  `json:"taskId"`
+	TaskNo      string                `json:"taskNo"`
+	AppName     string                `json:"appName"`
+	PackageName string                `json:"packageName"`
+	Version     string                `json:"version"`
+	BeforeScore int                   `json:"beforeScore"`
+	AfterScore  int                   `json:"afterScore"`
+	RiskLevel   model.RiskLevel       `json:"riskLevel"`
+	Dimensions  []ReportDimension     `json:"dimensions"`
+	Checklist   []ReportChecklistItem `json:"checklist"`
+	Artifact    ReportArtifact        `json:"artifact"`
 }
 
 func dexScore(level model.DexObfuscationLevel) int {

@@ -137,4 +137,3 @@ func (s *StrategyService) Save(input SaveStrategyInput, updatedBy uint, ip strin
 	}
 	return strategy, nil
 }
-

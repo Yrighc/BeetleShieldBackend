@@ -258,4 +258,3 @@ func (s *AppService) DownloadURL(ctx context.Context, id uint, actorUserID uint,
 	})
 	return downloadURL, nil
 }
-

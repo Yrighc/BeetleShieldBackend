@@ -80,4 +80,3 @@ func (s *AuthService) recordLoginFailure(email, ip string) {
 		Success:    false,
 	})
 }
-

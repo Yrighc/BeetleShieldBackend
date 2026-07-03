@@ -166,4 +166,3 @@ func (s *UserService) UpdateStatus(id uint, status model.UserStatus, currentUser
 	}
 	return nil
 }
-

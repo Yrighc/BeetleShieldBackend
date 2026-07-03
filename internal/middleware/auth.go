@@ -18,6 +18,7 @@ const (
 // JWTAuth 是一个JWT认证中间件函数，用于验证请求中的JWT令牌
 // 参数:
 //   - secret: 用于验证JWT令牌的密钥
+//
 // 返回值:
 //   - gin.HandlerFunc: Gin框架的中间件函数
 func JWTAuth(secret string) gin.HandlerFunc {

@@ -24,13 +24,13 @@ func fullyHardenedStrategy() model.Strategy {
 
 func baseReportTask(strategy model.Strategy) model.HardeningTask {
 	return model.HardeningTask{
-		ID:                   7,
-		TaskNo:               "TASK-20260703-1",
-		StrategySnapshot:     strategy,
-		UnsignedObjectKey:    "com.example.app/hardening/TASK-1/unsigned.apk",
-		UnsignedSHA256:       "unsignedsha",
-		SignedTestObjectKey:  "com.example.app/hardening/TASK-1/signed_test.apk",
-		SignedTestSHA256:     "signedsha",
+		ID:                  7,
+		TaskNo:              "TASK-20260703-1",
+		StrategySnapshot:    strategy,
+		UnsignedObjectKey:   "com.example.app/hardening/TASK-1/unsigned.apk",
+		UnsignedSHA256:      "unsignedsha",
+		SignedTestObjectKey: "com.example.app/hardening/TASK-1/signed_test.apk",
+		SignedTestSHA256:    "signedsha",
 		App: model.App{
 			Name:        "Example App",
 			PackageName: "com.example.app",
