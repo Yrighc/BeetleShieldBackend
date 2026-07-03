@@ -100,13 +100,22 @@ The default test suite does not run `dpt.jar`. To test the real engine locally:
 `app` 服务，放在 `full` compose profile 下，默认不随 `docker compose up`/`make dev-up`
 启动，避免打断现有的本地 `make run` 开发流程。
 
-`dpt.jar` 是不随仓库分发的专有二进制（见 `.gitignore` 里的 `/dpt/`），构建镜像前必须先手动放好：
+`dpt.jar` 及其配套资源不随仓库分发（见 `.gitignore` 里的 `/dpt/`），构建镜像前必须
+先手动放好——`dpt.jar` 在运行时会按自身所在目录（而不是当前工作目录）去找
+`shell-files/`、`bin/` 这两个配套目录，只拷贝 `dpt.jar` 单个文件会在实际加固时报
+`Cannot find directory: shell-files` 而失败，三者必须放在同一目录下一起拷贝：
 
 ```bash
 mkdir -p dpt
-cp /path/to/your/dpt.jar dpt/dpt.jar   # 例如本机的 dpt-shell/executable/dpt.jar
+cp -R /path/to/dpt-shell/executable/dpt.jar dpt/
+cp -R /path/to/dpt-shell/executable/shell-files dpt/
+cp -R /path/to/dpt-shell/executable/bin dpt/
 cp .env.example .env                    # 如果还没有 .env
 ```
+
+（已验证：这套 JRE 21 基础镜像足够跑完整条加固链路，包括 VMP 转换和加固后测试签名包
+生成——`dpt.jar` 用的是内置的纯 Java 签名库自己完成签名，不依赖 JDK 专属的
+`jarsigner`，所以不需要换成体积更大的 JDK 镜像。）
 
 然后：
 
