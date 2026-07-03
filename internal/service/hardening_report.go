@@ -113,19 +113,26 @@ func statusLabel(fixed bool) string {
 	return "已保留"
 }
 
-// BuildHardeningReport is a pure function: given a completed task's frozen
-// StrategySnapshot and artifact fields, it deterministically derives a risk
-// report. It never touches the database and never mutates App.RiskLevel —
-// persisting a risk level onto the App row is deferred to the Dashboard
-// sub-project, which is the first consumer that actually needs to query
-// apps by risk level.
-func BuildHardeningReport(task model.HardeningTask, engineVersion string) HardeningReport {
-	flags := ResolveEffectiveFlags(task.StrategySnapshot)
+type scoreBreakdown struct {
+	antiDebugEnvScore int
+	hookScore         int
+	sigScore          int
+	dexPoints         int
+	soPoints          int
+	encryptPoints     int
+	afterScore        int
+}
 
+// computeScoreBreakdown is the single source of truth for turning a
+// Strategy's effective flags into the overall risk score. BuildHardeningReport
+// (the human-readable report) and ResolveRiskLevel (the value persisted onto
+// App.RiskLevel when a task completes) both call this, so the two can never
+// silently drift apart.
+func computeScoreBreakdown(flags EffectiveFlags, dexLevel model.DexObfuscationLevel) scoreBreakdown {
 	antiDebugEnvScore := boolScore(flags.EmulatorDetect || flags.RootDetect, weightAntiDebugEnv)
 	hookScore := boolScore(flags.HookDetect, weightHookDefense)
 	sigScore := boolScore(flags.SigVerify, weightSignature)
-	dexPoints := dexScore(task.StrategySnapshot.DexLevel)
+	dexPoints := dexScore(dexLevel)
 	soPoints := boolScore(flags.VMPEnabled, weightSoShellMax)
 	encryptPoints := encryptionScore(flags)
 
@@ -134,15 +141,46 @@ func BuildHardeningReport(task model.HardeningTask, engineVersion string) Harden
 		afterScore = reportMinAfterScore
 	}
 
+	return scoreBreakdown{
+		antiDebugEnvScore: antiDebugEnvScore,
+		hookScore:         hookScore,
+		sigScore:          sigScore,
+		dexPoints:         dexPoints,
+		soPoints:          soPoints,
+		encryptPoints:     encryptPoints,
+		afterScore:        afterScore,
+	}
+}
+
+// ResolveRiskLevel computes the risk level for a completed task's strategy —
+// the same computation BuildHardeningReport uses internally. Exported so the
+// worker can persist App.RiskLevel at completion time without duplicating
+// (and risking drift from) the report's scoring logic.
+func ResolveRiskLevel(strategy model.Strategy) model.RiskLevel {
+	flags := ResolveEffectiveFlags(strategy)
+	breakdown := computeScoreBreakdown(flags, strategy.DexLevel)
+	return riskLevelForScore(breakdown.afterScore)
+}
+
+// BuildHardeningReport is a pure function: given a completed task's frozen
+// StrategySnapshot and artifact fields, it deterministically derives a risk
+// report. It never touches the database and never mutates App.RiskLevel —
+// persisting a risk level onto the App row is deferred to the Dashboard
+// sub-project, which is the first consumer that actually needs to query
+// apps by risk level.
+func BuildHardeningReport(task model.HardeningTask, engineVersion string) HardeningReport {
+	flags := ResolveEffectiveFlags(task.StrategySnapshot)
+	b := computeScoreBreakdown(flags, task.StrategySnapshot.DexLevel)
+
 	antiDebugCombinedWeight := weightAntiDebugEnv + weightHookDefense
-	antiDebugCombinedPercent := (antiDebugEnvScore + hookScore) * 100 / antiDebugCombinedWeight
+	antiDebugCombinedPercent := (b.antiDebugEnvScore + b.hookScore) * 100 / antiDebugCombinedWeight
 
 	dimensions := []ReportDimension{
 		{Name: "反调试保护", Before: 0, After: antiDebugCombinedPercent},
-		{Name: "DEX 混淆", Before: 0, After: dexPoints * 100 / weightDexMax},
-		{Name: "SO 加壳保护", Before: 0, After: soPoints * 100 / weightSoShellMax},
-		{Name: "资源文件加密", Before: 0, After: encryptPoints * 100 / weightEncryptionMax},
-		{Name: "签名校验", Before: 0, After: sigScore * 100 / weightSignature},
+		{Name: "DEX 混淆", Before: 0, After: b.dexPoints * 100 / weightDexMax},
+		{Name: "SO 加壳保护", Before: 0, After: b.soPoints * 100 / weightSoShellMax},
+		{Name: "资源文件加密", Before: 0, After: b.encryptPoints * 100 / weightEncryptionMax},
+		{Name: "签名校验", Before: 0, After: b.sigScore * 100 / weightSignature},
 	}
 
 	checklist := []ReportChecklistItem{
@@ -200,8 +238,8 @@ func BuildHardeningReport(task model.HardeningTask, engineVersion string) Harden
 		PackageName: task.App.PackageName,
 		Version:     task.App.Version,
 		BeforeScore: 100,
-		AfterScore:  afterScore,
-		RiskLevel:   riskLevelForScore(afterScore),
+		AfterScore:  b.afterScore,
+		RiskLevel:   riskLevelForScore(b.afterScore),
 		Dimensions:  dimensions,
 		Checklist:   checklist,
 		Artifact: ReportArtifact{

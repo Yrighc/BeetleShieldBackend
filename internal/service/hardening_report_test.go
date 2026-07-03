@@ -166,3 +166,33 @@ func TestBuildHardeningReport_CopiesAppAndTaskIdentity(t *testing.T) {
 		t.Fatalf("app identity = %+v", report)
 	}
 }
+
+func TestResolveRiskLevel_NoStrategyIsCritical(t *testing.T) {
+	if got := service.ResolveRiskLevel(model.Strategy{}); got != model.RiskLevelCritical {
+		t.Fatalf("ResolveRiskLevel(empty) = %q, want %q", got, model.RiskLevelCritical)
+	}
+}
+
+func TestResolveRiskLevel_FullyHardenedIsLow(t *testing.T) {
+	if got := service.ResolveRiskLevel(fullyHardenedStrategy()); got != model.RiskLevelLow {
+		t.Fatalf("ResolveRiskLevel(fully hardened) = %q, want %q", got, model.RiskLevelLow)
+	}
+}
+
+func TestResolveRiskLevel_MatchesBuildHardeningReportRiskLevel(t *testing.T) {
+	cases := []model.Strategy{
+		{},
+		fullyHardenedStrategy(),
+		{Emulator: true, RootDetect: true},
+		{Frida: true, DexLevel: model.DexLevelHigh},
+		{Debugger: true},
+	}
+
+	for i, strategy := range cases {
+		got := service.ResolveRiskLevel(strategy)
+		want := service.BuildHardeningReport(baseReportTask(strategy), "v1").RiskLevel
+		if got != want {
+			t.Fatalf("case %d: ResolveRiskLevel(%+v) = %q, want %q (must match BuildHardeningReport, same scoring math)", i, strategy, got, want)
+		}
+	}
+}
