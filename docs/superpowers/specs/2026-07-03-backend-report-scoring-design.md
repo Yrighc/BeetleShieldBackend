@@ -132,7 +132,7 @@ func ResolveEffectiveFlags(s model.Strategy) EffectiveFlags {
   "version": "5.2.1",
   "beforeScore": 100,
   "afterScore": 18,
-  "riskLevel": "低风险",
+  "riskLevel": "low",
   "dimensions": [
     { "name": "反调试保护", "before": 0, "after": 100 },
     { "name": "DEX 混淆", "before": 0, "after": 100 },
@@ -151,7 +151,9 @@ func ResolveEffectiveFlags(s model.Strategy) EffectiveFlags {
 }
 ```
 
-`riskLevel` 按 `afterScore` 区间映射：`<30`→"低风险"，`30-60`→"中风险"，`>60`→"高风险"（与前端 `Dashboard.tsx` 已有的 `riskLevelConfig` 三档保持一致，为子项目八 Dashboard 复用同一套阈值埋下基础）。
+`riskLevel` 复用 `internal/model/app.go` 里已有的 `RiskLevel` 枚举（`low`/`medium`/`high`/`critical`，子项目一建的字段，`App.RiskLevel *RiskLevel` 一直是 `nil`，从未被写入过——本子项目是第一个消费这个类型的地方，不新造一套三档字符串）。按 `afterScore` 区间映射：`<25`→`low`，`25-50`→`medium`，`50-75`→`high`，`>75`→`critical`。
+
+**本子项目不写回 `App.RiskLevel`**：报告是任务维度的实时计算结果，不代表"应用当前状态"（同一 App 可能有多次历史加固任务）。是否要在任务完成时把最新一次报告的 `riskLevel` 落到 `App.RiskLevel` 字段，留给子项目八（Dashboard 的"风险应用 Top5"面板需要按 riskLevel 查询/排序多个 App，那时才有持久化的实际需求；本子项目只有单任务只读查询，持久化是过度设计）。
 
 错误响应：
 - 任务不存在：`404`，复用现有 `ErrHardeningTaskNotFound`
