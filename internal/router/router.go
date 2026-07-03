@@ -74,6 +74,7 @@ func New(deps Deps) *gin.Engine {
 			hardeningTasks.GET("", deps.HardeningHandler.List)
 			hardeningTasks.GET("/:id", deps.HardeningHandler.Get)
 			hardeningTasks.GET("/:id/logs", deps.HardeningHandler.Logs)
+			hardeningTasks.GET("/:id/report", deps.HardeningHandler.GetReport)
 			hardeningTasks.GET("/:id/download-url", writeRoles, deps.HardeningHandler.DownloadURL)
 		}
 

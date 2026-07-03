@@ -194,6 +194,7 @@ func setupHardeningRouter(t *testing.T) (*httptest.Server, string, string, strin
 		fakeHardeningHandlerURLStorage{},
 		"# 全量探测保护 (依赖内置规则引擎进行智能避让)\n**",
 		auditService,
+		"BeetleShield Engine v2.4.1",
 	)
 	hardeningHandler := handler.NewHardeningHandler(hardeningSvc)
 
@@ -372,6 +373,110 @@ func TestHardeningHandler_ReadRoutesAllowAuditor(t *testing.T) {
 			t.Fatalf("%s status = %d, want %d", tc.name, getResp.StatusCode, http.StatusOK)
 		}
 		getResp.Body.Close()
+	}
+}
+
+func TestHardeningHandler_GetReportRequiresCompletedTask(t *testing.T) {
+	srv, _, developerToken, _, appID, _, _, cleanup := setupHardeningRouter(t)
+	defer cleanup()
+
+	body, _ := json.Marshal(map[string]interface{}{"appId": appID})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/hardening-tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+developerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	var created struct {
+		Data service.HardeningTaskDetail `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	resp.Body.Close()
+
+	reportReq, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v1/hardening-tasks/%d/report", srv.URL, created.Data.Task.ID), nil)
+	reportReq.Header.Set("Authorization", "Bearer "+developerToken)
+	reportResp, err := http.DefaultClient.Do(reportReq)
+	if err != nil {
+		t.Fatalf("report request: %v", err)
+	}
+	defer reportResp.Body.Close()
+	if reportResp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", reportResp.StatusCode, http.StatusConflict)
+	}
+}
+
+func TestHardeningHandler_GetReportUnknownTask(t *testing.T) {
+	srv, _, developerToken, _, _, _, _, cleanup := setupHardeningRouter(t)
+	defer cleanup()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/hardening-tasks/999999999/report", nil)
+	req.Header.Set("Authorization", "Bearer "+developerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("report request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+func TestHardeningHandler_GetReportOnCompletedTaskAllowsAuditor(t *testing.T) {
+	srv, _, developerToken, auditorToken, appID, hardeningRepo, _, cleanup := setupHardeningRouter(t)
+	defer cleanup()
+
+	body, _ := json.Marshal(map[string]interface{}{"appId": appID})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/hardening-tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+developerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	var created struct {
+		Data service.HardeningTaskDetail `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	resp.Body.Close()
+
+	now := time.Now()
+	if err := hardeningRepo.MarkTaskRunning(created.Data.Task.ID, now); err != nil {
+		t.Fatalf("MarkTaskRunning() error = %v", err)
+	}
+	if err := hardeningRepo.CompleteTaskForApp(created.Data.Task.ID, "unsigned.apk", 10, "abc", "signed.apk", 11, "def", now); err != nil {
+		t.Fatalf("CompleteTaskForApp() error = %v", err)
+	}
+
+	reportReq, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v1/hardening-tasks/%d/report", srv.URL, created.Data.Task.ID), nil)
+	reportReq.Header.Set("Authorization", "Bearer "+auditorToken)
+	reportResp, err := http.DefaultClient.Do(reportReq)
+	if err != nil {
+		t.Fatalf("report request: %v", err)
+	}
+	defer reportResp.Body.Close()
+	if reportResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", reportResp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data service.HardeningReport `json:"data"`
+	}
+	if err := json.NewDecoder(reportResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode report response: %v", err)
+	}
+	if got.Data.Artifact.FileName != "signed.apk" {
+		t.Fatalf("Artifact.FileName = %q, want signed.apk", got.Data.Artifact.FileName)
+	}
+	if len(got.Data.Dimensions) != 5 {
+		t.Fatalf("len(Dimensions) = %d, want 5", len(got.Data.Dimensions))
+	}
+	if len(got.Data.Checklist) != 6 {
+		t.Fatalf("len(Checklist) = %d, want 6", len(got.Data.Checklist))
 	}
 }
 

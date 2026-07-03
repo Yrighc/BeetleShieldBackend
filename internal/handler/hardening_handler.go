@@ -158,6 +158,28 @@ func (h *HardeningHandler) DownloadURL(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"url": url})
 }
 
+func (h *HardeningHandler) GetReport(c *gin.Context) {
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	report, err := h.svc.GetReport(id)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrHardeningTaskNotFound):
+			response.Error(c, http.StatusNotFound, 40410, "加固任务不存在")
+		case errors.Is(err, service.ErrHardeningReportNotReady):
+			response.Error(c, http.StatusConflict, 40911, "加固任务未完成，无法生成报告")
+		default:
+			response.Error(c, http.StatusInternalServerError, 50023, "生成加固报告失败")
+		}
+		return
+	}
+
+	response.Success(c, http.StatusOK, report)
+}
+
 func (h *HardeningHandler) AppHistory(c *gin.Context) {
 	id, ok := parseUintParam(c, "id")
 	if !ok {
