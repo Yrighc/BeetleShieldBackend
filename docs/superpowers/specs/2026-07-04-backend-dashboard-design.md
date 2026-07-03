@@ -68,9 +68,11 @@ riskLevel := service.ResolveRiskLevel(task.StrategySnapshot)
 
 `HardeningRepository`(`internal/repository/hardening_repository.go`):
 
-- `CountByStatusToday() (map[model.HardeningTaskStatus]int64, error)` — 按 `created_at` 落在今日(服务器本地时间,`time.Now()` 当天 00:00 起)的任务,按 `status` 分组计数。用于"今日加固任务数"(全部状态之和)与"今日结果分布"饼图(success/failed/processing,其中 processing = queued + running 之和)。
-- `HourlyCountsToday() ([24]int64, error)` — 今日任务按 `created_at` 小时分桶计数,下标 0-23 对应 00 时-23 时。
-- `AverageCompletedDurationToday() (avgSeconds float64, ok bool, err error)` — 今日 `status = completed` 且 `started_at`/`finished_at` 均非空的任务,`AVG(EXTRACT(EPOCH FROM finished_at - started_at))`;`ok=false` 表示今日无已完成任务,调用方展示为 0。
+- `CountByStatusSince(since time.Time) (map[model.HardeningTaskStatus]int64, error)` — 按 `created_at >= since` 的任务,按 `status` 分组计数。用于"今日加固任务数"(全部状态之和)与"今日结果分布"饼图(success/failed/processing,其中 processing = queued + running 之和)。
+- `HourlyCountsSince(since time.Time) ([24]int64, error)` — `created_at >= since` 的任务按其自身 `created_at` 的小时分桶计数,下标 0-23 对应 00 时-23 时。
+- `AverageCompletedDurationSince(since time.Time) (avgSeconds float64, ok bool, err error)` — `created_at >= since` 且 `status = completed`、`started_at`/`finished_at` 均非空的任务,平均耗时(秒);`ok=false` 表示没有符合条件的已完成任务,调用方展示为 0。
+
+以上三个方法接受显式的 `since` 参数,而不是在 repository 内部硬编码"今日"——`DashboardService` 是唯一决定"since 等于今天本地零点"的地方。这样设计是为了可测试性:在共享的非纯净开发库上,测试可以选择一个必然晚于所有历史脏数据的 `since` 截止时间,从而对聚合结果做精确断言,而不必依赖删除别人的数据或做脆弱的近似匹配。
 - `QueueCount() (int64, error)` — 全量(不限定"今日")`status IN (queued, running)` 计数,反映当前实际排队情况。
 - `Recent(limit int) ([]model.HardeningTask, error)` — 全局(不按 `AppID` 过滤)按 `created_at DESC` 取最近 N 条,`Preload("App")`。区别于已有的 `RecentByApp(appID uint, limit int)`。
 
@@ -172,7 +174,7 @@ Handler 直接返回 `response.Success`,无特殊错误分支(聚合查询本身
 ## 测试计划
 
 **后端:**
-- `internal/repository/hardening_repository_test.go`:新增 `TestHardeningRepository_CountByStatusToday`、`TestHardeningRepository_HourlyCountsToday`、`TestHardeningRepository_AverageCompletedDurationToday`、`TestHardeningRepository_QueueCount`、`TestHardeningRepository_Recent`,复用现有 `runID` 前缀隔离手法避免共享库脏数据干扰。
+- `internal/repository/hardening_repository_test.go`:新增 `CountByStatusSince`、`HourlyCountsSince`、`AverageCompletedDurationSince`、`QueueCount`、`Recent` 的测试,复用现有 `runID` 前缀隔离手法,并用"测试自己捕获的 `since`/未来时间戳"而非删除数据的方式规避共享库脏数据干扰。
 - `internal/repository/app_repository_test.go`:新增 `TestAppRepository_TopByRiskLevel`。
 - `internal/service/hardening_command_test.go` 或 `hardening_report_test.go`:新增 `TestResolveRiskLevel` 系列用例(全开/全关/单项),断言与 `BuildHardeningReport(...).RiskLevel` 结果一致。
 - `internal/service/dashboard_service_test.go`(新建):用固定 fixture 断言聚合结果的字段计算正确(成功率分母为 0 时返回 0、`durationSeconds` 为 nil 的未完成任务等边界)。
